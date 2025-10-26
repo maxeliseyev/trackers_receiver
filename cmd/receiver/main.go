@@ -2,20 +2,44 @@ package main
 
 import (
 	"fmt"
+	"log"
+
+	"github.com/joho/godotenv"
+	"trackers-receiver/internal/config"
 	"trackers-receiver/internal/server"
 )
 
 func main() {
-	// Адрес и порт для прослушивания
-	address := ":36000"
+	// Загружаем переменные окружения из .env файла
+	// Если файл не найден - не критично, будут использованы системные ENV или дефолты
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("Файл .env не найден, используются системные переменные окружения")
+	}
 
-	fmt.Println("TCP Server запускается на порту 36000...")
+	// Загружаем конфигурацию
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
+	}
+
+	// Выводим конфигурацию для отладки
+	fmt.Printf("=== Конфигурация сервера ===\n")
+	fmt.Printf("Порт: %d\n", cfg.Server.Port)
+	fmt.Printf("Таймаут чтения: %v\n", cfg.Server.ReadTimeout)
+	fmt.Printf("Таймаут записи: %v\n", cfg.Server.WriteTimeout)
+	fmt.Printf("Макс. подключений: %d\n", cfg.Server.MaxConnections)
+	fmt.Printf("Redis: %s\n", cfg.Redis.GetRedisAddr())
+	fmt.Printf("Очередь charger: %s (макс. %d)\n", cfg.Queue.ChargerName, cfg.Queue.ChargerMaxLen)
+	fmt.Printf("Очередь fasttrack: %s (макс. %d)\n", cfg.Queue.FasttrackName, cfg.Queue.FasttrackMaxLen)
+	fmt.Printf("============================\n\n")
+
+	fmt.Printf("TCP Server запускается на %s...\n", cfg.Server.GetServerAddr())
 
 	// Создаём TCP listener (слушатель)
-	listener, err := server.Start(address)
+	listener, err := server.Start(cfg.Server.GetServerAddr())
 	if err != nil {
-		fmt.Println("Ошибка запуска сервера:", err)
-		return
+		log.Fatalf("Ошибка запуска сервера: %v", err)
 	}
 	defer listener.Close()
 

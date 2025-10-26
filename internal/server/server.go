@@ -27,6 +27,40 @@ func HandleClient(conn net.Conn) ([]byte, error) {
 	return data, nil
 }
 
+// SendResponse отправляет ответ клиенту
+// Возвращает ошибку, если отправка не удалась
+func SendResponse(conn net.Conn, data []byte) error {
+	// conn.Write записывает данные в соединение
+	_, err := conn.Write(data)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ConnectionHandler - тип функции для обработки соединения
+type ConnectionHandler func(conn net.Conn)
+
+// AcceptConnections принимает подключения и обрабатывает каждое в отдельной горутине
+// Это позволяет серверу обслуживать множество клиентов одновременно
+func AcceptConnections(listener net.Listener, handler ConnectionHandler) {
+	for {
+		// Accept() блокируется, пока не придёт новое подключение
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Ошибка при подключении клиента:", err)
+			continue
+		}
+
+		fmt.Println("Новое подключение от:", conn.RemoteAddr())
+
+		// Запускаем обработчик в отдельной горутине
+		// Это позволяет серверу принимать новые подключения,
+		// пока обрабатывается текущее
+		go handler(conn)
+	}
+}
+
 // HandleConnections обрабатывает входящие подключения
 func HandleConnections(listener net.Listener) {
 	for {
