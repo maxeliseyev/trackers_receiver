@@ -1,0 +1,58 @@
+# Скомпилированные бинарники
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/receiver
+/trackers-receiver
+
+# Тестовые бинарники
+*.test
+
+# Покрытие кода
+*.out
+*.prof
+coverage.txt
+coverage.html
+
+# Go workspace файлы
+go.work
+go.work.sum
+
+# Зависимости (vendor)
+/vendor/
+
+# IDE файлы
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temporary файлы
+tmp/
+temp/
+*.tmp
+
+# Логи
+*.log
+
+# Environment файлы
+.env
+.env.local
+.env.*.local
+
+# Конфигурация (если содержит секреты)
+config.local.yaml
+config.local.json
+
+# Build директория
+/build/
+/dist/
+
+# Профилирование и отладка
+cpu.pprof
+mem.pprof
+trace.out
