@@ -3,6 +3,8 @@ package egts
 import (
 	"testing"
 	"time"
+
+	"trackers-receiver/internal/utils"
 )
 
 // TestParsePacketInsufficientData проверяет обработку недостаточных данных
@@ -67,7 +69,8 @@ func TestParseHeaderBasic(t *testing.T) {
 // TestParsePacketWithEmptyRecords проверяет пакет без записей
 func TestParsePacketWithEmptyRecords(t *testing.T) {
 	// Создаём пакет с пустыми данными фрейма
-	packetData := []byte{
+	// Сначала создаём заголовок без CRC для расчёта
+	headerWithoutCRC := []byte{
 		0x01,       // PRV
 		0x00,       // SKID
 		0x00,       // FLAGS
@@ -76,8 +79,16 @@ func TestParsePacketWithEmptyRecords(t *testing.T) {
 		0x00, 0x00, // FDL = 0 (нет данных)
 		0x01, 0x00, // PID
 		0x01,       // PT
-		0x00,       // HCS
 	}
+
+	// Вычисляем правильный CRC8 для заголовка
+	headerCRC := utils.CRC8(headerWithoutCRC)
+
+	// Создаём полный пакет с правильным CRC
+	packetData := append(headerWithoutCRC, headerCRC)
+
+	// Добавляем CRC16 для пустого тела (CRC16 пустого массива = 0xFFFF)
+	packetData = append(packetData, 0xFF, 0xFF)
 
 	packet, err := ParsePacket(packetData)
 	if err != nil {
@@ -376,4 +387,231 @@ func TestConstants(t *testing.T) {
 	}
 
 	t.Log("Константы EGTS корректны")
+}
+
+// TestParseRecordWithOptionalFields проверяет разбор Record с опциональными полями (OID, EVID, TM)
+func TestParseRecordWithOptionalFields(t *testing.T) {
+	// Создаём тестовую запись с установленными флагами для OID, EVID, TM
+	// RFL = 0b11100000 = 0xE0 (OBFE=1, EVFE=1, TMFE=1)
+	recordData := []byte{
+		0x01, 0x00, // Record Length (RL) = 1 байт данных
+		0x01, 0x00, // Record Number (RN) = 1
+		0xE0,       // Record Flags (RFL) = 0xE0 (все три флага установлены)
+		// Object ID (4 байта, т.к. OBFE=1)
+		0x78, 0x56, 0x34, 0x12, // OID = 0x12345678
+		// Event ID (4 байта, т.к. EVFE=1)
+		0xEF, 0xCD, 0xAB, 0x89, // EVID = 0x89ABCDEF
+		// Time (4 байта, т.к. TMFE=1)
+		0x10, 0x00, 0x00, 0x00, // TM = 16 секунд от EGTS epoch
+		// SourceServiceType (1 байт)
+		0x01, // SST = EGTS_AUTH_SERVICE
+		// RecipientServiceType (1 байт)
+		0x02, // RST = EGTS_TELEDATA_SERVICE
+		// Service Data (1 байт согласно RL)
+		0xFF, // Данные подзаписи
+	}
+
+	// Создаём полный пакет с правильными CRC
+	headerWithoutCRC := []byte{
+		0x01,                   // PRV
+		0x00,                   // SKID
+		0x00,                   // FLAGS
+		0x0B,                   // HL
+		0x00,                   // HE
+		byte(len(recordData)),  // FDL (низший байт)
+		byte(len(recordData) >> 8), // FDL (высший байт)
+		0x01, 0x00,             // PID
+		0x01,                   // PT (EGTS_PT_APPDATA)
+	}
+
+	headerCRC := utils.CRC8(headerWithoutCRC)
+	packetData := append(headerWithoutCRC, headerCRC)
+	packetData = append(packetData, recordData...)
+
+	// Добавляем CRC16 для тела
+	bodyCRC := utils.CRC16(recordData)
+	packetData = append(packetData, byte(bodyCRC), byte(bodyCRC>>8))
+
+	// Парсим пакет
+	packet, err := ParsePacket(packetData)
+	if err != nil {
+		t.Fatalf("Ошибка парсинга пакета: %v", err)
+	}
+
+	// Проверяем, что запись распарсена
+	if len(packet.Records) != 1 {
+		t.Fatalf("Количество записей = %d; ожидалось 1", len(packet.Records))
+	}
+
+	record := packet.Records[0]
+
+	// Проверяем флаги
+	if record.RecordFlags != 0xE0 {
+		t.Errorf("RecordFlags = 0x%02X; ожидалось 0xE0", record.RecordFlags)
+	}
+
+	// Проверяем Object ID
+	if record.ObjectID != 0x12345678 {
+		t.Errorf("ObjectID = 0x%08X; ожидалось 0x12345678", record.ObjectID)
+	}
+
+	// Проверяем Event ID
+	if record.EventID != 0x89ABCDEF {
+		t.Errorf("EventID = 0x%08X; ожидалось 0x89ABCDEF", record.EventID)
+	}
+
+	// Проверяем Time
+	if record.Time != 16 {
+		t.Errorf("Time = %d; ожидалось 16", record.Time)
+	}
+
+	t.Logf("Опциональные поля успешно распарсены: OID=0x%08X, EVID=0x%08X, TM=%d",
+		record.ObjectID, record.EventID, record.Time)
+}
+
+// TestParseRecordWithoutOptionalFields проверяет разбор Record без опциональных полей
+func TestParseRecordWithoutOptionalFields(t *testing.T) {
+	// Создаём тестовую запись без опциональных полей
+	// RFL = 0b00000000 = 0x00 (все флаги сброшены)
+	recordData := []byte{
+		0x01, 0x00, // Record Length (RL) = 1 байт данных
+		0x02, 0x00, // Record Number (RN) = 2
+		0x00,       // Record Flags (RFL) = 0x00 (флаги сброшены)
+		// Нет OID, EVID, TM (флаги сброшены)
+		// SourceServiceType (1 байт)
+		0x01, // SST = EGTS_AUTH_SERVICE
+		// RecipientServiceType (1 байт)
+		0x02, // RST = EGTS_TELEDATA_SERVICE
+		// Service Data (1 байт согласно RL)
+		0xAA, // Данные подзаписи
+	}
+
+	// Создаём полный пакет с правильными CRC
+	headerWithoutCRC := []byte{
+		0x01,                   // PRV
+		0x00,                   // SKID
+		0x00,                   // FLAGS
+		0x0B,                   // HL
+		0x00,                   // HE
+		byte(len(recordData)),  // FDL (низший байт)
+		byte(len(recordData) >> 8), // FDL (высший байт)
+		0x01, 0x00,             // PID
+		0x01,                   // PT (EGTS_PT_APPDATA)
+	}
+
+	headerCRC := utils.CRC8(headerWithoutCRC)
+	packetData := append(headerWithoutCRC, headerCRC)
+	packetData = append(packetData, recordData...)
+
+	// Добавляем CRC16 для тела
+	bodyCRC := utils.CRC16(recordData)
+	packetData = append(packetData, byte(bodyCRC), byte(bodyCRC>>8))
+
+	// Парсим пакет
+	packet, err := ParsePacket(packetData)
+	if err != nil {
+		t.Fatalf("Ошибка парсинга пакета: %v", err)
+	}
+
+	// Проверяем, что запись распарсена
+	if len(packet.Records) != 1 {
+		t.Fatalf("Количество записей = %d; ожидалось 1", len(packet.Records))
+	}
+
+	record := packet.Records[0]
+
+	// Проверяем флаги
+	if record.RecordFlags != 0x00 {
+		t.Errorf("RecordFlags = 0x%02X; ожидалось 0x00", record.RecordFlags)
+	}
+
+	// Проверяем, что опциональные поля имеют дефолтные значения (0)
+	if record.ObjectID != 0 {
+		t.Errorf("ObjectID = 0x%08X; ожидалось 0x00000000", record.ObjectID)
+	}
+
+	if record.EventID != 0 {
+		t.Errorf("EventID = 0x%08X; ожидалось 0x00000000", record.EventID)
+	}
+
+	if record.Time != 0 {
+		t.Errorf("Time = %d; ожидалось 0", record.Time)
+	}
+
+	t.Log("Запись без опциональных полей успешно распарсена")
+}
+
+// TestParseRecordPartialOptionalFields проверяет разбор Record с частичными опциональными полями
+func TestParseRecordPartialOptionalFields(t *testing.T) {
+	// Создаём тестовую запись только с OID (без EVID и TM)
+	// RFL = 0b10000000 = 0x80 (только OBFE=1)
+	recordData := []byte{
+		0x01, 0x00, // Record Length (RL) = 1 байт данных
+		0x03, 0x00, // Record Number (RN) = 3
+		0x80,       // Record Flags (RFL) = 0x80 (только OBFE установлен)
+		// Object ID (4 байта, т.к. OBFE=1)
+		0x11, 0x22, 0x33, 0x44, // OID = 0x44332211
+		// Нет EVID и TM (флаги не установлены)
+		// SourceServiceType (1 байт)
+		0x01, // SST = EGTS_AUTH_SERVICE
+		// RecipientServiceType (1 байт)
+		0x02, // RST = EGTS_TELEDATA_SERVICE
+		// Service Data (1 байт согласно RL)
+		0xBB, // Данные подзаписи
+	}
+
+	// Создаём полный пакет с правильными CRC
+	headerWithoutCRC := []byte{
+		0x01,                   // PRV
+		0x00,                   // SKID
+		0x00,                   // FLAGS
+		0x0B,                   // HL
+		0x00,                   // HE
+		byte(len(recordData)),  // FDL (низший байт)
+		byte(len(recordData) >> 8), // FDL (высший байт)
+		0x01, 0x00,             // PID
+		0x01,                   // PT (EGTS_PT_APPDATA)
+	}
+
+	headerCRC := utils.CRC8(headerWithoutCRC)
+	packetData := append(headerWithoutCRC, headerCRC)
+	packetData = append(packetData, recordData...)
+
+	// Добавляем CRC16 для тела
+	bodyCRC := utils.CRC16(recordData)
+	packetData = append(packetData, byte(bodyCRC), byte(bodyCRC>>8))
+
+	// Парсим пакет
+	packet, err := ParsePacket(packetData)
+	if err != nil {
+		t.Fatalf("Ошибка парсинга пакета: %v", err)
+	}
+
+	// Проверяем, что запись распарсена
+	if len(packet.Records) != 1 {
+		t.Fatalf("Количество записей = %d; ожидалось 1", len(packet.Records))
+	}
+
+	record := packet.Records[0]
+
+	// Проверяем флаги
+	if record.RecordFlags != 0x80 {
+		t.Errorf("RecordFlags = 0x%02X; ожидалось 0x80", record.RecordFlags)
+	}
+
+	// Проверяем Object ID
+	if record.ObjectID != 0x44332211 {
+		t.Errorf("ObjectID = 0x%08X; ожидалось 0x44332211", record.ObjectID)
+	}
+
+	// Проверяем, что другие опциональные поля имеют дефолтные значения
+	if record.EventID != 0 {
+		t.Errorf("EventID = 0x%08X; ожидалось 0x00000000", record.EventID)
+	}
+
+	if record.Time != 0 {
+		t.Errorf("Time = %d; ожидалось 0", record.Time)
+	}
+
+	t.Logf("Запись с частичными опциональными полями успешно распарсена: OID=0x%08X", record.ObjectID)
 }
