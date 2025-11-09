@@ -38,12 +38,12 @@ func SendResponse(conn net.Conn, data []byte) error {
 	return nil
 }
 
-// ConnectionHandler - тип функции для обработки соединения
-type ConnectionHandler func(conn net.Conn)
+// HandlerFunc - тип функции для обработки соединения
+type HandlerFunc func(conn net.Conn)
 
 // AcceptConnections принимает подключения и обрабатывает каждое в отдельной горутине
 // Это позволяет серверу обслуживать множество клиентов одновременно
-func AcceptConnections(listener net.Listener, handler ConnectionHandler) {
+func AcceptConnections(listener net.Listener, handler HandlerFunc) {
 	for {
 		// Accept() блокируется, пока не придёт новое подключение
 		conn, err := listener.Accept()
