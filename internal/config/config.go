@@ -7,14 +7,12 @@ import (
 	"time"
 )
 
-// Config содержит все настройки приложения
 type Config struct {
 	Server ServerConfig
 	Redis  RedisConfig
 	Queue  QueueConfig
 }
 
-// ServerConfig - настройки TCP сервера
 type ServerConfig struct {
 	Port           int           // Порт для прослушивания
 	ReadTimeout    time.Duration // Таймаут чтения
@@ -22,7 +20,6 @@ type ServerConfig struct {
 	MaxConnections int           // Максимальное количество подключений
 }
 
-// RedisConfig - настройки подключения к Redis
 type RedisConfig struct {
 	Host       string // Хост Redis
 	Port       int    // Порт Redis
@@ -32,7 +29,6 @@ type RedisConfig struct {
 	MaxRetries int    // Максимальное количество повторов
 }
 
-// QueueConfig - настройки очередей
 type QueueConfig struct {
 	ChargerName     string // Имя очереди charger
 	ChargerMaxLen   int    // Максимальная длина очереди charger
@@ -40,7 +36,6 @@ type QueueConfig struct {
 	FasttrackMaxLen int    // Максимальная длина очереди fasttrack
 }
 
-// Load загружает конфигурацию из переменных окружения с дефолтными значениями
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
@@ -65,7 +60,6 @@ func Load() (*Config, error) {
 		},
 	}
 
-	// Валидация
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -73,19 +67,15 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// Validate проверяет корректность конфигурации
 func (c *Config) Validate() error {
-	// Проверка порта
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("неверный порт сервера: %d (должен быть 1-65535)", c.Server.Port)
 	}
 
-	// Проверка таймаутов
 	if c.Server.ReadTimeout < 0 {
 		return fmt.Errorf("таймаут чтения не может быть отрицательным")
 	}
 
-	// Проверка Redis
 	if c.Redis.Host == "" {
 		return fmt.Errorf("REDIS_HOST не может быть пустым")
 	}
@@ -94,7 +84,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("неверный порт Redis: %d", c.Redis.Port)
 	}
 
-	// Проверка имён очередей
 	if c.Queue.ChargerName == "" {
 		return fmt.Errorf("имя очереди charger не может быть пустым")
 	}
@@ -106,7 +95,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// getEnv получает значение из переменной окружения или возвращает дефолтное
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -114,7 +102,6 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// getEnvAsInt получает целое число из переменной окружения
 func getEnvAsInt(key string, defaultValue int) int {
 	valueStr := os.Getenv(key)
 	if valueStr == "" {
@@ -129,8 +116,6 @@ func getEnvAsInt(key string, defaultValue int) int {
 	return value
 }
 
-// getEnvAsDuration получает duration из переменной окружения
-// Принимает значение в секундах, например: SERVER_READ_TIMEOUT=600
 func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 	valueStr := os.Getenv(key)
 	if valueStr == "" {
@@ -145,12 +130,10 @@ func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// GetRedisAddr возвращает адрес Redis в формате "host:port"
 func (c *RedisConfig) GetRedisAddr() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
 }
 
-// GetServerAddr возвращает адрес сервера в формате ":port"
 func (c *ServerConfig) GetServerAddr() string {
 	return fmt.Sprintf(":%d", c.Port)
 }

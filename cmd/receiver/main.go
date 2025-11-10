@@ -105,20 +105,6 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// Goroutine for stats printing
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				pool.PrintStats()
-			case <-sigChan:
-				return
-			}
-		}
-	}()
-
 	// Main accept loop
 	go func() {
 		for {
@@ -141,9 +127,6 @@ func main() {
 
 	// Close listener to stop accepting new connections
 	listener.Close()
-
-	// Print final stats
-	pool.PrintStats()
 
 	fmt.Println("✅ Server shutdown complete")
 }
