@@ -1,50 +1,149 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"runtime"
+	"syscall"
+	"time"
 
-	"github.com/joho/godotenv"
 	"trackers-receiver/internal/config"
 	"trackers-receiver/internal/server"
+	"trackers-receiver/internal/storage/redis"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	// Загружаем переменные окружения из .env файла
-	// Если файл не найден - не критично, будут использованы системные ENV или дефолты
 	err := godotenv.Load()
 	if err != nil {
-		log.Println("Файл .env не найден, используются системные переменные окружения")
+		log.Println("The .env file was not found; system environment variables are being used.")
 	}
 
-	// Загружаем конфигурацию
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
+		log.Fatalf("Configuration loading error: %v", err)
 	}
 
-	// Выводим конфигурацию для отладки
-	fmt.Printf("=== Конфигурация сервера ===\n")
-	fmt.Printf("Порт: %d\n", cfg.Server.Port)
-	fmt.Printf("Таймаут чтения: %v\n", cfg.Server.ReadTimeout)
-	fmt.Printf("Таймаут записи: %v\n", cfg.Server.WriteTimeout)
-	fmt.Printf("Макс. подключений: %d\n", cfg.Server.MaxConnections)
+	// Print configuration for debugging
+	fmt.Printf("=== Configuration ===\n")
+	fmt.Printf("Port: %d\n", cfg.Server.Port)
+	fmt.Printf("Read Timeout: %v\n", cfg.Server.ReadTimeout)
+	fmt.Printf("Write Timeout: %v\n", cfg.Server.WriteTimeout)
+	fmt.Printf("Max Connections: %d\n", cfg.Server.MaxConnections)
 	fmt.Printf("Redis: %s\n", cfg.Redis.GetRedisAddr())
-	fmt.Printf("Очередь charger: %s (макс. %d)\n", cfg.Queue.ChargerName, cfg.Queue.ChargerMaxLen)
-	fmt.Printf("Очередь fasttrack: %s (макс. %d)\n", cfg.Queue.FasttrackName, cfg.Queue.FasttrackMaxLen)
+	fmt.Printf("Queue charger: %s (max %d)\n", cfg.Queue.ChargerName, cfg.Queue.ChargerMaxLen)
+	fmt.Printf("Queue fasttrack: %s (max %d)\n", cfg.Queue.FasttrackName, cfg.Queue.FasttrackMaxLen)
 	fmt.Printf("============================\n\n")
 
-	fmt.Printf("TCP Server запускается на %s...\n", cfg.Server.GetServerAddr())
+	// Initialize Redis storage
+	redisConfig := &redis.Config{
+		Host:     cfg.Redis.Host,
+		Port:     cfg.Redis.Port,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+		PoolSize: 100,
+		QueueMaxLengths: map[string]int64{
+			cfg.Queue.ChargerName:   int64(cfg.Queue.ChargerMaxLen),
+			cfg.Queue.FasttrackName: int64(cfg.Queue.FasttrackMaxLen),
+		},
+	}
 
-	// Создаём TCP listener (слушатель)
+	storage, err := redis.NewRedisStorage(redisConfig)
+	if err != nil {
+		log.Fatalf("Failed to initialize Redis storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Check Redis health
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := storage.Health(ctx); err != nil {
+		log.Fatalf("Redis health check failed: %v", err)
+	}
+	fmt.Println("✅ Redis connection successful")
+
+	// Configure Worker Pool
+	numWorkers := max(4, min(32, runtime.NumCPU()*2))
+
+	poolConfig := &server.PoolConfig{
+		NumWorkers:       numWorkers,
+		QueueSize:        10000,
+		ShutdownTimeout:  30 * time.Second,
+		ConnectionConfig: server.DefaultConnectionConfig(),
+	}
+
+	fmt.Printf("Worker Pool: %d workers, queue size: %d\n", poolConfig.NumWorkers, poolConfig.QueueSize)
+
+	// Create and start Worker Pool
+	pool := server.NewWorkerPool(storage, poolConfig)
+	pool.Start()
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+		if err := pool.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Warning: pool shutdown error: %v", err)
+		}
+	}()
+
+	fmt.Println("✅ Worker pool started")
+
+	// Create TCP listener
+	fmt.Printf("Starting TCP server on %s...\n", cfg.Server.GetServerAddr())
 	listener, err := server.Start(cfg.Server.GetServerAddr())
 	if err != nil {
-		log.Fatalf("Ошибка запуска сервера: %v", err)
+		log.Fatalf("Error starting server: %v", err)
 	}
 	defer listener.Close()
 
-	fmt.Println("Сервер успешно запущен и ожидает подключений...")
+	fmt.Println("✅ Server successfully started and waiting for connections...")
 
-	// Обработка подключений
-	server.HandleConnections(listener)
+	// Setup graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Goroutine for stats printing
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				pool.PrintStats()
+			case <-sigChan:
+				return
+			}
+		}
+	}()
+
+	// Main accept loop
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				fmt.Printf("Error accepting connection: %v\n", err)
+				continue
+			}
+
+			// Submit connection to worker pool
+			if err := pool.Submit(conn); err != nil {
+				fmt.Printf("Error submitting connection from %s: %v\n", conn.RemoteAddr(), err)
+			}
+		}
+	}()
+
+	// Wait for shutdown signal
+	<-sigChan
+	fmt.Println("\n🛑 Shutdown signal received, starting graceful shutdown...")
+
+	// Close listener to stop accepting new connections
+	listener.Close()
+
+	// Print final stats
+	pool.PrintStats()
+
+	fmt.Println("✅ Server shutdown complete")
 }

@@ -2,27 +2,45 @@
 
 High-performance TCP server for receiving GPS/GLONASS tracker data via EGTS protocol.
 
+**Status:** 🟢 Production Ready (Redis) | **Progress:** 85% Complete
+
 ## Overview
 
 This server receives telemetry data from vehicle tracking devices using the **EGTS (Era Glonass Telematics Standard)** protocol. It parses binary packets, validates data integrity using CRC checksums, and stores the data in Redis for further processing.
 
+**Target Capacity:** 100,000+ concurrent connections
+
 ## Features
+
+### ✅ Implemented
 
 - **EGTS Protocol Support**: Full implementation of EGTS packet parsing
   - Transport Layer Header parsing with CRC8 validation
   - Service Layer Records with CRC16 validation
   - All standard subrecord types (position, sensors, state, etc.)
+  - Response packet generation
 
-- **High Performance**: Built with Go for concurrent connection handling
-  - Async TCP server
-  - Redis integration for fast data storage
+- **High Performance Architecture**:
+  - Worker pool for connection management (CPU * 2 workers)
+  - Buffered job queue (10k capacity)
+  - Backpressure handling
+  - Redis integration with connection pooling
   - MessagePack serialization
 
-- **Production Ready** (in development):
-  - Graceful shutdown
-  - Connection pooling
-  - Rate limiting
-  - Comprehensive error handling
+- **Production Features**:
+  - ✅ Graceful shutdown (SIGINT/SIGTERM)
+  - ✅ Rate limiting with IP blocking
+  - ✅ Exponential backoff for malicious IPs
+  - ✅ Whitelist support
+  - ✅ Comprehensive metrics
+  - ✅ Health checks
+  - ✅ Thread-safe operations
+
+### 🚧 In Progress
+
+- Integration tests
+- Structured logging (zerolog/slog)
+- Prometheus metrics endpoint
 
 ## Quick Start
 
@@ -53,11 +71,17 @@ go mod download
 go test ./...
 
 # Build
-go build -o trackers-receiver ./cmd/receiver
+go build -o bin/receiver ./cmd/receiver
 
 # Run
-./trackers-receiver
+./bin/receiver
 ```
+
+## Documentation
+
+- **[DOCS.md](DOCS.md)** - Complete documentation index
+- **[PROJECT_STATUS.md](PROJECT_STATUS.md)** - Current status, progress, and roadmap ⭐
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Architecture and migration strategy
 
 ## Supported Protocols
 

@@ -11,8 +11,7 @@ import (
 	"time"
 
 	"trackers-receiver/internal/egts"
-	"trackers-receiver/internal/redis"
-	"trackers-receiver/internal/serialization"
+	"trackers-receiver/internal/storage"
 	"trackers-receiver/pkg/models"
 )
 
@@ -24,9 +23,8 @@ type ConnectionHandler struct {
 	reader *bufio.Reader
 	writer *bufio.Writer
 
-	// Хранилище
-	storage    *redis.Client
-	serializer *serialization.Serializer
+	// Хранилище (интерфейс для гибкости)
+	storage storage.QueueStorage
 
 	// Конфигурация
 	config *ConnectionConfig
@@ -88,18 +86,17 @@ type ConnectionStats struct {
 }
 
 // NewConnectionHandler создает новый обработчик подключения
-func NewConnectionHandler(conn net.Conn, storage *redis.Client, config *ConnectionConfig) *ConnectionHandler {
+func NewConnectionHandler(conn net.Conn, stor storage.QueueStorage, config *ConnectionConfig) *ConnectionHandler {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	handler := &ConnectionHandler{
-		conn:       conn,
-		reader:     bufio.NewReaderSize(conn, config.BufferSize),
-		writer:     bufio.NewWriterSize(conn, config.BufferSize),
-		storage:    storage,
-		serializer: serialization.NewSerializer(),
-		config:     config,
-		ctx:        ctx,
-		cancel:     cancel,
+		conn:     conn,
+		reader:   bufio.NewReaderSize(conn, config.BufferSize),
+		writer:   bufio.NewWriterSize(conn, config.BufferSize),
+		storage:  stor,
+		config:   config,
+		ctx:      ctx,
+		cancel:   cancel,
 		stats: &ConnectionStats{
 			StartTime:    time.Now(),
 			LastActivity: time.Now(),
@@ -438,27 +435,21 @@ func (h *ConnectionHandler) createDocument(packetID uint16) *models.Document {
 	return doc
 }
 
-// saveDocuments сохраняет документы в обе очереди Redis
+// saveDocuments сохраняет документы в обе очереди
 func (h *ConnectionHandler) saveDocuments(documents []*models.Document) error {
 	ctx := context.Background()
 
-	// Сериализуем все документы
-	serializedDocs, err := h.serializer.MarshalBatch(documents)
-	if err != nil {
-		return fmt.Errorf("failed to marshal documents: %w", err)
+	// Используем batch операции для производительности
+	// Сохраняем в обе очереди (как в Python версии)
+
+	// Queue: charger
+	if err := h.storage.PushBatch(ctx, h.config.QueueCharger, documents); err != nil {
+		return fmt.Errorf("failed to push to charger queue: %w", err)
 	}
 
-	// Сохраняем в обе очереди (как в Python)
-	for _, docData := range serializedDocs {
-		// Queue: charger
-		if _, err := h.storage.PushToQueue(ctx, h.config.QueueCharger, docData); err != nil {
-			return fmt.Errorf("failed to push to charger queue: %w", err)
-		}
-
-		// Queue: fasttrack
-		if _, err := h.storage.PushToQueue(ctx, h.config.QueueFasttrack, docData); err != nil {
-			return fmt.Errorf("failed to push to fasttrack queue: %w", err)
-		}
+	// Queue: fasttrack
+	if err := h.storage.PushBatch(ctx, h.config.QueueFasttrack, documents); err != nil {
+		return fmt.Errorf("failed to push to fasttrack queue: %w", err)
 	}
 
 	h.stats.PacketsProcessed.Add(uint64(len(documents)))

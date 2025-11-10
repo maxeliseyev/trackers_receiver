@@ -51,6 +51,7 @@ config.local.json
 # Build директория
 /build/
 /dist/
+/bin/
 
 # Профилирование и отладка
 cpu.pprof
