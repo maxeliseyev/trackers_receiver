@@ -1,0 +1,59 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+!README.mdd
+
+# Build artifacts
+bin/
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+receiver
+trackers-receiver
+
+# Tests
+*_test.go
+test/
+coverage.txt
+coverage.html
+*.out
+*.test
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Temporary
+tmp/
+temp/
+*.tmp
+*.log
+
+# Vendor (if using)
+vendor/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+bitbucket-pipelines.yml
