@@ -77,12 +77,6 @@ go build -o bin/receiver ./cmd/receiver
 ./bin/receiver
 ```
 
-## Documentation
-
-- **[DOCS.md](DOCS.md)** - Complete documentation index
-- **[PROJECT_STATUS.md](PROJECT_STATUS.md)** - Current status, progress, and roadmap ⭐
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Architecture and migration strategy
-
 ## Supported Protocols
 
 ### Current: EGTS (In Development)
@@ -103,5 +97,3 @@ The following protocols are planned for future implementation **after** EGTS is 
 - **Teltonika** - AVL Data protocol (Codec 8/8 Extended)
 - **Wialon IPS** - Text-based protocol
 - **H02** - Simple text protocol for Chinese trackers
-
-See [FUTURE_PROTOCOLS.md](FUTURE_PROTOCOLS.md) for detailed specifications and implementation plans.
