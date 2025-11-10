@@ -1,6 +1,6 @@
 # Multi-stage build for trackers-receiver
 # Stage 1: Build
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25.3-alpine3.22 AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata

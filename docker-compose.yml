@@ -10,29 +10,8 @@ services:
     restart: unless-stopped
     ports:
       - "36000:36000"
-    environment:
-      # Server configuration
-      SERVER_PORT: 36000
-      SERVER_READ_TIMEOUT: 600
-      SERVER_WRITE_TIMEOUT: 30
-      SERVER_MAX_CONNECTIONS: 100000
-
-      # Redis configuration
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-      REDIS_DB: 0
-
-      # Queue configuration
-      QUEUE_CHARGER_NAME: charger
-      QUEUE_CHARGER_MAX_LEN: 2999999
-      QUEUE_FASTTRACK_NAME: fasttrack
-      QUEUE_FASTTRACK_MAX_LEN: 2999999
-    depends_on:
-      redis:
-        condition: service_healthy
-    networks:
-      - trackers-net
+    env_file:
+      - ./.env
     # Resource limits
     deploy:
       resources:
@@ -42,11 +21,3 @@ services:
         reservations:
           cpus: "2"
           memory: 2G
-
-volumes:
-  redis-data:
-    driver: local
-
-networks:
-  trackers-net:
-    driver: bridge
