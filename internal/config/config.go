@@ -14,26 +14,26 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port           int           // Порт для прослушивания
-	ReadTimeout    time.Duration // Таймаут чтения
-	WriteTimeout   time.Duration // Таймаут записи
-	MaxConnections int           // Максимальное количество подключений
+	Port           int           // Listen port
+	ReadTimeout    time.Duration // Read timeout
+	WriteTimeout   time.Duration // Write timeout
+	MaxConnections int           // Maximum number of connections
 }
 
 type RedisConfig struct {
-	Host       string // Хост Redis
-	Port       int    // Порт Redis
-	Password   string // Пароль (опционально)
-	DB         int    // Номер базы данных
-	PoolSize   int    // Размер пула подключений
-	MaxRetries int    // Максимальное количество повторов
+	Host       string // Redis host
+	Port       int    // Redis port
+	Password   string // Password (optional)
+	DB         int    // Database number
+	PoolSize   int    // Pool size
+	MaxRetries int    // Maximum number of retries
 }
 
 type QueueConfig struct {
-	ChargerName     string // Имя очереди charger
-	ChargerMaxLen   int    // Максимальная длина очереди charger
-	FasttrackName   string // Имя очереди fasttrack
-	FasttrackMaxLen int    // Максимальная длина очереди fasttrack
+	ChargerName     string // Charger queue name
+	ChargerMaxLen   int    // Charger queue maximum length
+	FasttrackName   string // Fasttrack queue name
+	FasttrackMaxLen int    // Fasttrack queue maximum length
 }
 
 func Load() (*Config, error) {
@@ -69,27 +69,27 @@ func Load() (*Config, error) {
 
 func (c *Config) Validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
-		return fmt.Errorf("неверный порт сервера: %d (должен быть 1-65535)", c.Server.Port)
+		return fmt.Errorf("invalid server port: %d (should be 1-65535)", c.Server.Port)
 	}
 
 	if c.Server.ReadTimeout < 0 {
-		return fmt.Errorf("таймаут чтения не может быть отрицательным")
+		return fmt.Errorf("read timeout cannot be negative")
 	}
 
 	if c.Redis.Host == "" {
-		return fmt.Errorf("REDIS_HOST не может быть пустым")
+		return fmt.Errorf("REDIS_HOST cannot be empty")
 	}
 
 	if c.Redis.Port < 1 || c.Redis.Port > 65535 {
-		return fmt.Errorf("неверный порт Redis: %d", c.Redis.Port)
+		return fmt.Errorf("invalid Redis port: %d", c.Redis.Port)
 	}
 
 	if c.Queue.ChargerName == "" {
-		return fmt.Errorf("имя очереди charger не может быть пустым")
+		return fmt.Errorf("charger queue name cannot be empty")
 	}
 
 	if c.Queue.FasttrackName == "" {
-		return fmt.Errorf("имя очереди fasttrack не может быть пустым")
+		return fmt.Errorf("fasttrack queue name cannot be empty")
 	}
 
 	return nil
