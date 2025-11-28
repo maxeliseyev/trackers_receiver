@@ -10,43 +10,41 @@ import (
 	"trackers-receiver/internal/utils"
 )
 
-// Константы EGTS протокола
+// EGTS constants
 const (
-	// Версия протокола EGTS
 	ProtocolVersion = 0x01
 
-	// Минимальная длина заголовка пакета
 	MinHeaderLength = 11
 
-	// Типы пакетов EGTS
-	PtResponse           = 0  // EGTS_PT_RESPONSE - подтверждение
-	PtAppdata            = 1  // EGTS_PT_APPDATA - данные приложения
-	PtSignedAppdata      = 2  // EGTS_PT_SIGNED_APPDATA - подписанные данные
-	PtAppdataWithRecords = 3  // EGTS_PT_APPDATA_WITH_RECORDS - данные с записями
+	// EGTS packet types
+	PtResponse           = 0 // EGTS_PT_RESPONSE - подтверждение
+	PtAppdata            = 1 // EGTS_PT_APPDATA - данные приложения
+	PtSignedAppdata      = 2 // EGTS_PT_SIGNED_APPDATA - подписанные данные
+	PtAppdataWithRecords = 3 // EGTS_PT_APPDATA_WITH_RECORDS - данные с записями
 
-	// Сервисы EGTS
-	EgtsAuthService     = 1  // EGTS_AUTH_SERVICE - авторизация
-	EgtsTeleDataService = 2  // EGTS_TELEDATA_SERVICE - телематические данные
-	EgtsCommandsService = 4  // EGTS_COMMANDS_SERVICE - команды
+	// EGTS services
+	EgtsAuthService     = 1 // EGTS_AUTH_SERVICE - авторизация
+	EgtsTeleDataService = 2 // EGTS_TELEDATA_SERVICE - телематические данные
+	EgtsCommandsService = 4 // EGTS_COMMANDS_SERVICE - команды
 
-	// Типы подзаписей AUTH_SERVICE
+	// EGTS subrecord types for authentication service
 	SrRecordResponse = 0 // EGTS_SR_RECORD_RESPONSE - ответ на запись
 	SrTermIdentity   = 1 // EGTS_SR_TERM_IDENTITY - идентификация терминала
 
-	// Типы подзаписей (subrecords) для телематических данных
-	SrPosData         = 16 // EGTS_SR_POS_DATA - данные о позиции
-	SrExtPosData      = 17 // EGTS_SR_EXT_POS_DATA - расширенные данные о позиции
-	SrAdSensorsData   = 18 // EGTS_SR_AD_SENSORS_DATA - данные аналоговых датчиков
-	SrCountersData    = 19 // EGTS_SR_COUNTERS_DATA - данные счётчиков
-	SrStateData       = 20 // EGTS_SR_STATE_DATA - данные состояния
-	SrAbsAnSensData   = 24 // EGTS_SR_ABS_AN_SENS_DATA - абсолютные аналоговые датчики
-	SrAbsCntrData     = 25 // EGTS_SR_ABS_CNTR_DATA - абсолютные счетчики
-	SrLiquidLevel     = 27 // EGTS_SR_LIQUID_LEVEL_SENSOR - уровень жидкости
-	SrPassengers      = 28 // EGTS_SR_PASSENGERS - количество пассажиров
+	// EGTS subrecord types for teledata service
+	SrPosData       = 16 // EGTS_SR_POS_DATA - данные о позиции
+	SrExtPosData    = 17 // EGTS_SR_EXT_POS_DATA - расширенные данные о позиции
+	SrAdSensorsData = 18 // EGTS_SR_AD_SENSORS_DATA - данные аналоговых датчиков
+	SrCountersData  = 19 // EGTS_SR_COUNTERS_DATA - данные счётчиков
+	SrStateData     = 20 // EGTS_SR_STATE_DATA - данные состояния
+	SrAbsAnSensData = 24 // EGTS_SR_ABS_AN_SENS_DATA - абсолютные аналоговые датчики
+	SrAbsCntrData   = 25 // EGTS_SR_ABS_CNTR_DATA - абсолютные счетчики
+	SrLiquidLevel   = 27 // EGTS_SR_LIQUID_LEVEL_SENSOR - уровень жидкости
+	SrPassengers    = 28 // EGTS_SR_PASSENGERS - количество пассажиров
 )
 
-// PacketHeader представляет заголовок EGTS пакета
-// Согласно спецификации EGTS Transport Layer
+// PacketHeader represents EGTS packet header
+// According to specific of EGTS Transport Layer
 type PacketHeader struct {
 	ProtocolVersion  uint8  // PRV - версия протокола (должна быть 0x01)
 	SecurityKeyID    uint8  // SKID - идентификатор ключа безопасности
@@ -66,28 +64,28 @@ type PacketHeader struct {
 	HeaderCheckSum   uint8  // HCS - контрольная сумма заголовка
 }
 
-// Packet представляет полный EGTS пакет
+// Packet represents full EGTS packet
 type Packet struct {
 	Header  *PacketHeader
-	Records []*Record // Записи в пакете
-	Raw     []byte    // Сырые данные пакета
+	Records []*Record
+	Raw     []byte
 }
 
-// Record представляет запись EGTS (Service Frame Data Record)
+// Record represents EGTS (Service Frame Data Record)
 type Record struct {
-	RecordLength       uint16      // RL - длина данных записи
-	RecordNumber       uint16      // RN - номер записи
-	RecordFlags        uint8       // RFL - флаги записи
-	ObjectID           uint32      // OID - идентификатор объекта (опционально)
-	EventID            uint32      // EVID - идентификатор события (опционально)
-	Time               uint32      // TM - время (опционально)
-	SourceServiceType  uint8       // SST - тип сервиса источника
-	RecipientServiceType uint8     // RST - тип сервиса получателя
-	RecordData         []byte      // RD - данные записи
-	SubRecords         []*SubRecord // Подзаписи
+	RecordLength         uint16       // RL - длина данных записи
+	RecordNumber         uint16       // RN - номер записи
+	RecordFlags          uint8        // RFL - флаги записи
+	ObjectID             uint32       // OID - идентификатор объекта (опционально)
+	EventID              uint32       // EVID - идентификатор события (опционально)
+	Time                 uint32       // TM - время (опционально)
+	SourceServiceType    uint8        // SST - тип сервиса источника
+	RecipientServiceType uint8        // RST - тип сервиса получателя
+	RecordData           []byte       // RD - данные записи
+	SubRecords           []*SubRecord // Подзаписи
 }
 
-// SubRecord представляет подзапись EGTS
+// SubRecord is subrecord of EGTS
 type SubRecord struct {
 	Type   uint8  // SRT - тип подзаписи
 	Length uint16 // SRL - длина данных подзаписи
@@ -201,11 +199,6 @@ func parseHeader(data []byte) (*PacketHeader, error) {
 	// - RCA (2 байта) - Recipient Address (адрес отправителя)
 	// - TTL (1 байт) - Time To Live (время жизни пакета)
 	//
-	// Пример из Python кода (oldproject/src/protocols/egts/__init__.py:187-193):
-	//   if self.tl_rte:
-	//       self.tl_pra, self.tl_rca, self.tl_ttl = unpack('<HHB', data[:5])
-	//       cur_idx = 5
-	//
 	// Для реализации нужно:
 	// 1. Проверить флаг Route (header.Route == 1)
 	// 2. Прочитать 5 дополнительных байт (PRA, RCA, TTL)
@@ -216,7 +209,7 @@ func parseHeader(data []byte) (*PacketHeader, error) {
 	// так как HCS находится на позиции (HeaderLength - 1), и длина заголовка увеличивается
 	// при наличии этих опциональных полей.
 	//
-	// Приоритет: СРЕДНИЙ (эти поля используются редко, в основном для маршрутизации через
+	// Эти поля используются редко, в основном для маршрутизации через
 	// промежуточные серверы, но для полной совместимости с протоколом их нужно реализовать)
 
 	// Контрольная сумма заголовка (последний байт заголовка)
@@ -539,46 +532,46 @@ type ExtPosData struct {
 
 // StateData содержит данные состояния терминала из EGTS SR_STATE_DATA
 type StateData struct {
-	State              uint8  // Флаги состояния
-	MainPowerVoltage   uint8  // Напряжение основного питания (* 0.1V)
-	BackupBatVoltage   uint8  // Напряжение резервной батареи (* 0.1V)
-	InternalBatVoltage uint8  // Напряжение встроенной батареи (* 0.1V)
-	StateFlags         uint8  // Дополнительные флаги состояния
+	State              uint8 // Флаги состояния
+	MainPowerVoltage   uint8 // Напряжение основного питания (* 0.1V)
+	BackupBatVoltage   uint8 // Напряжение резервной батареи (* 0.1V)
+	InternalBatVoltage uint8 // Напряжение встроенной батареи (* 0.1V)
+	StateFlags         uint8 // Дополнительные флаги состояния
 }
 
 // TermIdentity содержит данные идентификации терминала из EGTS SR_TERM_IDENTITY
 type TermIdentity struct {
-	TerminalID     uint32 // Идентификатор терминала
+	TerminalID     uint32  // Идентификатор терминала
 	HomeDispatcher *uint16 // Идентификатор домашнего диспетчера (опционально)
-	IMEI           string // IMEI терминала (15 байт)
-	IMSI           string // IMSI SIM-карты (16 байт)
-	LanguageCode   string // Код языка (3 байта, опционально)
-	NetworkID      []byte // Network Identifier (3 байта, опционально)
+	IMEI           string  // IMEI терминала (15 байт)
+	IMSI           string  // IMSI SIM-карты (16 байт)
+	LanguageCode   string  // Код языка (3 байта, опционально)
+	NetworkID      []byte  // Network Identifier (3 байта, опционально)
 	BufferSize     *uint16 // Размер буфера (опционально)
-	MSISDN         string // Номер телефона (15 байт, опционально)
+	MSISDN         string  // Номер телефона (15 байт, опционально)
 }
 
 // ADSensorsData содержит данные аналоговых и дискретных датчиков из EGTS SR_AD_SENSORS_DATA
 type ADSensorsData struct {
-	DigitalInputsOutputs map[string]uint8    // ADIO датчики (ключ: "adio_X_Y")
-	DigitalOutputs       map[string]uint8    // Дискретные выходы (ключ: "dout_X")
-	AnalogSensors        map[string]int32    // Аналоговые датчики (ключ: "ans_X")
+	DigitalInputsOutputs map[string]uint8 // ADIO датчики (ключ: "adio_X_Y")
+	DigitalOutputs       map[string]uint8 // Дискретные выходы (ключ: "dout_X")
+	AnalogSensors        map[string]int32 // Аналоговые датчики (ключ: "ans_X")
 }
 
 // LiquidLevelData содержит данные уровня жидкости из EGTS SR_LIQUID_LEVEL_SENSOR
 type LiquidLevelData struct {
-	SensorFlags       uint8  // Флаги датчика
-	ModuleAddress     uint16 // Адрес модуля
+	SensorFlags       uint8   // Флаги датчика
+	ModuleAddress     uint16  // Адрес модуля
 	LevelMM           *uint32 // Уровень в миллиметрах (опционально)
 	LevelL            *uint32 // Уровень в литрах (* 10, опционально)
-	NavDataNumber     uint8  // Номер навигационных данных
-	SensorErrorStatus uint8  // Статус ошибки датчика
+	NavDataNumber     uint8   // Номер навигационных данных
+	SensorErrorStatus uint8   // Статус ошибки датчика
 }
 
 // CounterData содержит данные счетчика из EGTS SR_ABS_CNTR_DATA
 type CounterData struct {
-	CounterNumber uint8     // Номер счетчика
-	CounterValue  int32     // Значение счетчика
+	CounterNumber uint8      // Номер счетчика
+	CounterValue  int32      // Значение счетчика
 	CounterTime   *time.Time // Время счетчика (для счетчика 105)
 }
 
@@ -882,9 +875,9 @@ func GetLiquidLevelData(subRecord *SubRecord) (*LiquidLevelData, error) {
 	// Бит 7-5: не используются
 	// Биты 4-2: ERR + RDF (формат данных)
 	// Биты 1-0: номер навигационных данных
-	liquid.NavDataNumber = liquid.SensorFlags & 0x07       // биты 2-0
+	liquid.NavDataNumber = liquid.SensorFlags & 0x07            // биты 2-0
 	liquid.SensorErrorStatus = (liquid.SensorFlags >> 1) & 0x01 // бит 1
-	rdf := (liquid.SensorFlags >> 2) & 0x03                // биты 3-2
+	rdf := (liquid.SensorFlags >> 2) & 0x03                     // биты 3-2
 
 	// LLSD - Liquid Level Sensor Data
 	// Размер зависит от флага RDF[4] (бит 4):

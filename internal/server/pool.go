@@ -16,7 +16,8 @@ import (
 // Предотвращает создание неограниченного количества горутин
 //
 // Архитектура:
-//   Incoming connections → Rate Limiter → Job Queue (buffered channel) → Workers (fixed pool) → Processing
+//
+//	Incoming connections → Rate Limiter → Job Queue (buffered channel) → Workers (fixed pool) → Processing
 //
 // Для 100k+ одновременных трекеров:
 //   - Workers: runtime.NumCPU() * 2 (например, 16 workers для 8 CPU)
@@ -25,8 +26,8 @@ import (
 //   - Rate limiting для защиты от DDoS
 type WorkerPool struct {
 	// Конфигурация
-	workers   int           // Количество worker горутин
-	queueSize int           // Размер очереди заданий
+	workers   int // Количество worker горутин
+	queueSize int // Размер очереди заданий
 	storage   storage.QueueStorage
 	config    *ConnectionConfig
 
@@ -34,9 +35,9 @@ type WorkerPool struct {
 	rateLimiter *RateLimiter // Rate limiting и IP blocking
 
 	// Каналы
-	jobs     chan Job           // Очередь заданий (подключений)
-	shutdown chan struct{}      // Сигнал для graceful shutdown
-	done     chan struct{}      // Сигнал что все workers завершились
+	jobs     chan Job      // Очередь заданий (подключений)
+	shutdown chan struct{} // Сигнал для graceful shutdown
+	done     chan struct{} // Сигнал что все workers завершились
 
 	// Контекст для cancellation
 	ctx    context.Context
@@ -427,29 +428,4 @@ func (p *WorkerPool) GetMetrics() map[string]any {
 	}
 
 	return metrics
-}
-
-// PrintStats выводит статистику пула (для отладки)
-func (p *WorkerPool) PrintStats() {
-	uptime := time.Since(p.stats.StartTime)
-
-	fmt.Printf("\n=== Worker Pool Statistics ===\n")
-	fmt.Printf("Uptime:           %s\n", uptime.Round(time.Second))
-	fmt.Printf("Workers:          %d (active: %d)\n", p.workers, p.stats.ActiveWorkers.Load())
-	fmt.Printf("Queue:            %d/%d (%.1f%% full)\n",
-		p.stats.QueueLength.Load(),
-		p.queueSize,
-		float64(p.stats.QueueLength.Load())/float64(p.queueSize)*100)
-	fmt.Printf("\nConnections:\n")
-	fmt.Printf("  Accepted:       %d\n", p.stats.TotalAccepted.Load())
-	fmt.Printf("  Rejected:       %d\n", p.stats.TotalRejected.Load())
-	fmt.Printf("  Processed:      %d\n", p.stats.TotalProcessed.Load())
-	fmt.Printf("  Failed:         %d\n", p.stats.TotalFailed.Load())
-	fmt.Printf("\nPerformance:\n")
-	fmt.Printf("  Throughput:     %.2f conn/sec\n",
-		float64(p.stats.TotalProcessed.Load())/uptime.Seconds())
-	fmt.Printf("  Avg queue time: %d ms\n", p.stats.AvgQueueTimeMs.Load())
-	fmt.Printf("  Rejection rate: %.2f%%\n",
-		float64(p.stats.TotalRejected.Load())/float64(p.stats.TotalAccepted.Load()+1)*100)
-	fmt.Printf("==============================\n\n")
 }

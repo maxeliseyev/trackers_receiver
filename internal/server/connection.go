@@ -15,8 +15,6 @@ import (
 	"trackers-receiver/pkg/models"
 )
 
-// ConnectionHandler обрабатывает одно TCP подключение от трекера
-// Спроектирован для высокопроизводительной обработки с минимальными аллокациями
 type ConnectionHandler struct {
 	// Соединение
 	conn   net.Conn
@@ -49,11 +47,11 @@ type ConnectionHandler struct {
 
 // ConnectionConfig конфигурация для connection handler
 type ConnectionConfig struct {
-	ReadTimeout    time.Duration // Таймаут чтения (600 секунд как в Python)
+	ReadTimeout    time.Duration // Таймаут чтения (600 секунд)
 	WriteTimeout   time.Duration // Таймаут записи (30 секунд)
 	IdleTimeout    time.Duration // Idle timeout (300 секунд)
 	MaxPacketSize  int           // Максимальный размер пакета (защита от DoS)
-	StrictCRC      bool          // Строгая проверка CRC (false = как Python)
+	StrictCRC      bool          // Строгая проверка CRC
 	BufferSize     int           // Размер буфера для чтения/записи
 	QueueCharger   string        // Имя очереди charger
 	QueueFasttrack string        // Имя очереди fasttrack
@@ -66,7 +64,7 @@ func DefaultConnectionConfig() *ConnectionConfig {
 		WriteTimeout:   30 * time.Second,
 		IdleTimeout:    300 * time.Second,
 		MaxPacketSize:  65536, // 64KB
-		StrictCRC:      false, // Толерантный режим как Python
+		StrictCRC:      false, // Толерантный режим
 		BufferSize:     8192,  // 8KB буфер
 		QueueCharger:   "charger",
 		QueueFasttrack: "fasttrack",
@@ -90,13 +88,13 @@ func NewConnectionHandler(conn net.Conn, stor storage.QueueStorage, config *Conn
 	ctx, cancel := context.WithCancel(context.Background())
 
 	handler := &ConnectionHandler{
-		conn:     conn,
-		reader:   bufio.NewReaderSize(conn, config.BufferSize),
-		writer:   bufio.NewWriterSize(conn, config.BufferSize),
-		storage:  stor,
-		config:   config,
-		ctx:      ctx,
-		cancel:   cancel,
+		conn:    conn,
+		reader:  bufio.NewReaderSize(conn, config.BufferSize),
+		writer:  bufio.NewWriterSize(conn, config.BufferSize),
+		storage: stor,
+		config:  config,
+		ctx:     ctx,
+		cancel:  cancel,
 		stats: &ConnectionStats{
 			StartTime:    time.Now(),
 			LastActivity: time.Now(),
@@ -328,15 +326,15 @@ func (h *ConnectionHandler) processRecord(record *egts.Record, packetID uint16) 
 
 			// Заполняем навигационные данные
 			navData := &models.NavigationData{
-				Timestamp:   posData.NavigationTime,
-				Longitude:   posData.Longitude,
-				Latitude:    posData.Latitude,
-				Speed:       posData.Speed,
-				Course:      posData.Course,
-				Track:       posData.Odometer,
-				Altitude:    posData.Altitude,
-				Source:      posData.Source,
-				ExtraDOP:    posData.ExtraDOP,
+				Timestamp: posData.NavigationTime,
+				Longitude: posData.Longitude,
+				Latitude:  posData.Latitude,
+				Speed:     posData.Speed,
+				Course:    posData.Course,
+				Track:     posData.Odometer,
+				Altitude:  posData.Altitude,
+				Source:    posData.Source,
+				ExtraDOP:  posData.ExtraDOP,
 			}
 
 			doc.SetNavigationData(navData)

@@ -2,8 +2,6 @@
 
 High-performance TCP server for receiving GPS/GLONASS tracker data via EGTS protocol.
 
-**Status:** 🟢 Production Ready (Redis) | **Progress:** 85% Complete
-
 ## Overview
 
 This server receives telemetry data from vehicle tracking devices using the **EGTS (Era Glonass Telematics Standard)** protocol. It parses binary packets, validates data integrity using CRC checksums, and stores the data in Redis for further processing.
