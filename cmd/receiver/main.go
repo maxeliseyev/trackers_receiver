@@ -64,7 +64,7 @@ func main() {
 	if err := storage.Health(ctx); err != nil {
 		log.Fatalf("Redis health check failed: %v", err)
 	}
-	fmt.Println("✅ Redis connection successful")
+	fmt.Println("[INFO] Redis connection successful")
 
 	// Configure Worker Pool
 	numWorkers := max(4, min(32, runtime.NumCPU()*2))
@@ -89,7 +89,7 @@ func main() {
 		}
 	}()
 
-	fmt.Println("✅ Worker pool started")
+	fmt.Println("[INFO] Worker pool started")
 
 	// Create TCP listener
 	fmt.Printf("Starting TCP server on %s...\n", cfg.Server.GetServerAddr())
@@ -99,7 +99,7 @@ func main() {
 	}
 	defer listener.Close()
 
-	fmt.Println("✅ Server successfully started and waiting for connections...")
+	fmt.Println("[INFO] Server successfully started and waiting for connections...")
 
 	// Setup graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -110,23 +110,23 @@ func main() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				fmt.Printf("Error accepting connection: %v\n", err)
+				fmt.Printf("[ERROR] Error accepting connection: %v\n", err)
 				continue
 			}
 
 			// Submit connection to worker pool
 			if err := pool.Submit(conn); err != nil {
-				fmt.Printf("Error submitting connection from %s: %v\n", conn.RemoteAddr(), err)
+				fmt.Printf("[ERROR] Error submitting connection from %s: %v\n", conn.RemoteAddr(), err)
 			}
 		}
 	}()
 
 	// Wait for shutdown signal
 	<-sigChan
-	fmt.Println("\n🛑 Shutdown signal received, starting graceful shutdown...")
+	fmt.Println("\n[INFO] Shutdown signal received, starting graceful shutdown...")
 
 	// Close listener to stop accepting new connections
 	listener.Close()
 
-	fmt.Println("✅ Server shutdown complete")
+	fmt.Println("[INFO] Server shutdown complete")
 }

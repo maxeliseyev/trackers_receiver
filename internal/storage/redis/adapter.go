@@ -30,8 +30,8 @@ type RedisStorage struct {
 
 	// Метрики производительности
 	metrics struct {
-		mu          sync.RWMutex
-		latencies   []time.Duration // Последние N латентностей
+		mu           sync.RWMutex
+		latencies    []time.Duration // Последние N латентностей
 		maxLatencies int             // Максимальное количество хранимых латентностей
 	}
 
@@ -212,8 +212,8 @@ func (rs *RedisStorage) PushRaw(ctx context.Context, queue string, data []byte) 
 	// Обрезаем очередь если есть лимит
 	if maxLen, ok := rs.config.QueueMaxLengths[queue]; ok {
 		if err := rs.client.LTrim(ctx, queue, 0, maxLen-1).Err(); err != nil {
-			// Trim failed - логируем но не падаем
-			// TODO: добавить логирование
+			// Trim failed - log but don't fail the operation
+			// NOTE: Consider adding structured logging here when implementing zerolog/slog
 		}
 	}
 
@@ -260,13 +260,13 @@ func (rs *RedisStorage) Stats() *storage.Stats {
 	defer rs.health.mu.RUnlock()
 
 	stats := &storage.Stats{
-		TotalPushed:  rs.stats.totalPushed.Load(),
-		TotalFailed:  rs.stats.totalFailed.Load(),
-		TotalBytes:   rs.stats.totalBytes.Load(),
-		LastError:    rs.health.lastError,
+		TotalPushed:   rs.stats.totalPushed.Load(),
+		TotalFailed:   rs.stats.totalFailed.Load(),
+		TotalBytes:    rs.stats.totalBytes.Load(),
+		LastError:     rs.health.lastError,
 		LastErrorTime: rs.health.lastCheck,
-		HealthStatus: rs.health.status,
-		QueueSizes:   make(map[string]int64),
+		HealthStatus:  rs.health.status,
+		QueueSizes:    make(map[string]int64),
 	}
 
 	// Вычисляем метрики производительности

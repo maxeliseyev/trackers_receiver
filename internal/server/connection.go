@@ -117,7 +117,9 @@ func (h *ConnectionHandler) Handle() error {
 
 	// Читаем первые байты для определения протокола
 	signature := make([]byte, 2)
-	if _, err := io.ReadFull(h.reader, signature); err != nil {
+	n, err := io.ReadFull(h.reader, signature)
+	if err != nil {
+		fmt.Printf("[ERROR] Failed to read signature from %s: %v (read %d bytes)\n", h.remoteAddr, err, n)
 		return fmt.Errorf("failed to read signature: %w", err)
 	}
 
@@ -141,6 +143,7 @@ func (h *ConnectionHandler) Handle() error {
 			// Обрабатываем один пакет
 			if err := h.handleEGTSPacket(signature); err != nil {
 				h.stats.ErrorsCount.Add(1)
+				fmt.Printf("[WARN] Error processing packet: %v\n", err)
 
 				// Определяем, критическая ли ошибка
 				if isFatalError(err) {
@@ -179,10 +182,12 @@ func (h *ConnectionHandler) Handle() error {
 // handleEGTSPacket обрабатывает один EGTS пакет
 func (h *ConnectionHandler) handleEGTSPacket(signature []byte) error {
 	h.stats.PacketsReceived.Add(1)
+	fmt.Printf("[DEBUG] Processing EGTS packet from %s\n", h.remoteAddr)
 
 	// Читаем оставшуюся часть заголовка (10 байт = 11 - 2 байта сигнатуры)
 	headerRest := make([]byte, 9)
 	if _, err := io.ReadFull(h.reader, headerRest); err != nil {
+		fmt.Printf("[ERROR] Failed to read header: %v\n", err)
 		return fmt.Errorf("failed to read header: %w", err)
 	}
 	h.stats.BytesReceived.Add(9)
@@ -213,55 +218,63 @@ func (h *ConnectionHandler) handleEGTSPacket(signature []byte) error {
 	// Собираем полный пакет
 	fullPacket := append(headerData, bodyData...)
 
-	// Парсим пакет
+	// Parse packet
+	fmt.Printf("[DEBUG] Parsing packet (%d bytes)\n", len(fullPacket))
 	packet, err := egts.ParsePacket(fullPacket)
 	if err != nil {
-		// CRC ошибка?
+		fmt.Printf("[ERROR] Parse error: %v\n", err)
+		// CRC error?
 		if isCRCError(err) {
 			h.stats.CRCErrors.Add(1)
 
-			// В толерантном режиме продолжаем обработку
+			// Continue processing in tolerant mode
 			if !h.config.StrictCRC {
-				// TODO: логировать warning
-				// Пытаемся все равно обработать
+				fmt.Printf("[WARN] CRC error, but continuing (tolerant mode)\n")
+				// Try to process anyway
 			} else {
 				return err
 			}
 		} else {
 			return fmt.Errorf("failed to parse packet: %w", err)
 		}
+	} else {
+		fmt.Printf("[DEBUG] Packet parsed: Type=%d, Records=%d\n", packet.Header.PacketType, len(packet.Records))
 	}
 
-	// Обрабатываем пакет по типу
+	// Route packet by type
+	fmt.Printf("[DEBUG] Routing packet type %d\n", packet.Header.PacketType)
 	switch packet.Header.PacketType {
 	case egts.PtAppdata:
+		fmt.Printf("[DEBUG] Processing APPDATA packet\n")
 		return h.processAppdataPacket(packet)
 	case egts.PtResponse:
-		// Обрабатываем ответ от трекера (редко)
+		fmt.Printf("[DEBUG] Processing RESPONSE packet\n")
+		// Process response from tracker (rare)
 		return h.processResponsePacket(packet)
 	default:
-		// Неизвестный тип пакета - не критично
-		// TODO: логировать warning
+		fmt.Printf("[WARN] Unknown packet type: %d\n", packet.Header.PacketType)
+		// Unknown packet type - not critical
 		return h.sendErrorResponse(packet.Header.PacketID, egts.ProcessingResultUnsupportedType)
 	}
 }
 
-// processAppdataPacket обрабатывает EGTS_PT_APPDATA пакет
+// processAppdataPacket processes EGTS_PT_APPDATA packet
 func (h *ConnectionHandler) processAppdataPacket(packet *egts.Packet) error {
 	if len(packet.Records) == 0 {
-		// Пустой пакет - отправляем подтверждение но не обрабатываем
+		// Empty packet - send acknowledgment but don't process
 		return h.sendResponse(packet.Header.PacketID, nil, egts.ProcessingResultOK)
 	}
 
-	// Собираем документы из всех записей
+	// Collect documents from all records
 	documents := make([]*models.Document, 0, len(packet.Records))
 	recordNumbers := make([]uint16, 0, len(packet.Records))
 
 	for _, record := range packet.Records {
-		// Обрабатываем запись
+		// Process record
 		doc, err := h.processRecord(record, packet.Header.PacketID)
 		if err != nil {
-			// TODO: логировать ошибку
+			// Log error but continue processing other records
+			fmt.Printf("[WARN] Failed to process record %d: %v\n", record.RecordNumber, err)
 			continue
 		}
 
@@ -271,32 +284,37 @@ func (h *ConnectionHandler) processAppdataPacket(packet *egts.Packet) error {
 		}
 	}
 
-	// Сохраняем документы в Redis
+	// Save documents to Redis
 	if len(documents) > 0 {
+		fmt.Printf("[INFO] Saving %d documents to Redis from %s\n", len(documents), h.remoteAddr)
 		if err := h.saveDocuments(documents); err != nil {
-			// Ошибка сохранения - но все равно отправляем OK трекеру
-			// TODO: логировать error, сохранить в fallback queue
+			// Save error - but still send OK to tracker
+			fmt.Printf("[ERROR] Failed to save documents: %v\n", err)
+		} else {
+			fmt.Printf("[INFO] Successfully saved %d documents\n", len(documents))
 		}
+	} else {
+		fmt.Printf("[DEBUG] No documents to save (empty records) from %s\n", h.remoteAddr)
 	}
 
-	// Отправляем подтверждение
+	// Send acknowledgment
 	return h.sendResponse(packet.Header.PacketID, recordNumbers, egts.ProcessingResultOK)
 }
 
-// processRecord обрабатывает одну запись и создает документ
+// processRecord processes one record and creates a document
 func (h *ConnectionHandler) processRecord(record *egts.Record, packetID uint16) (*models.Document, error) {
-	// Извлекаем OID/TID если есть
+	// Extract OID/TID if present
 	if record.ObjectID != 0 {
 		h.oid = record.ObjectID
 	}
 
 	var doc *models.Document
 
-	// Обрабатываем подзаписи
+	// Process subrecords
 	for _, subRecord := range record.SubRecords {
 		switch subRecord.Type {
 		case egts.SrTermIdentity:
-			// Идентификация терминала
+			// Terminal identification
 			identity, err := egts.GetTermIdentity(subRecord)
 			if err == nil {
 				h.imei = identity.IMEI
@@ -309,10 +327,10 @@ func (h *ConnectionHandler) processRecord(record *egts.Record, packetID uint16) 
 			}
 
 		case egts.SrPosData:
-			// Создаем новый документ для каждого SR_POS_DATA
+			// Create new document for each SR_POS_DATA
 			if doc != nil {
-				// Уже был документ - это новая навигационная точка
-				// Сохраняем предыдущий
+				// Already had a document - this is a new navigation point
+				// Save previous one
 				break
 			}
 
@@ -321,10 +339,10 @@ func (h *ConnectionHandler) processRecord(record *egts.Record, packetID uint16) 
 				return nil, fmt.Errorf("failed to parse position data: %w", err)
 			}
 
-			// Создаем документ
+			// Create document
 			doc = h.createDocument(packetID)
 
-			// Заполняем навигационные данные
+			// Fill navigation data
 			navData := &models.NavigationData{
 				Timestamp: posData.NavigationTime,
 				Longitude: posData.Longitude,
@@ -341,7 +359,7 @@ func (h *ConnectionHandler) processRecord(record *egts.Record, packetID uint16) 
 			doc.SetPosDataExtras(posData.DigitalInputs, posData.Odometer)
 
 		case egts.SrExtPosData:
-			// Расширенные данные позиции
+			// Extended position data
 			if doc == nil {
 				continue
 			}
@@ -363,7 +381,7 @@ func (h *ConnectionHandler) processRecord(record *egts.Record, packetID uint16) 
 			}
 
 		case egts.SrStateData:
-			// Данные состояния
+			// State data
 			if doc == nil {
 				continue
 			}
@@ -375,7 +393,7 @@ func (h *ConnectionHandler) processRecord(record *egts.Record, packetID uint16) 
 			}
 
 		case egts.SrLiquidLevel:
-			// Уровень топлива
+			// Fuel level
 			if doc == nil {
 				continue
 			}
@@ -395,7 +413,7 @@ func (h *ConnectionHandler) processRecord(record *egts.Record, packetID uint16) 
 			}
 
 		case egts.SrAbsCntrData:
-			// Счетчики
+			// Counters
 			if doc == nil {
 				continue
 			}
@@ -413,32 +431,39 @@ func (h *ConnectionHandler) processRecord(record *egts.Record, packetID uint16) 
 	return doc, nil
 }
 
-// createDocument создает базовый документ с метаданными
+// createDocument creates a basic document with metadata
 func (h *ConnectionHandler) createDocument(packetID uint16) *models.Document {
-	// Парсим IP и Port
+	// Parse IP and Port
 	host, port, _ := net.SplitHostPort(h.remoteAddr)
 	address := [2]interface{}{host, port}
 
-	// Client ID = OID или TID
+	// Client ID = OID or TID
 	clientID := h.oid
 	if clientID == 0 {
 		clientID = h.tid
 	}
 
-	doc := models.NewDocument("egts", h.deviceID, address)
+	// Use deviceID (IMEI or TID) as IMEI for document
+	imeiForDoc := h.imei
+	if imeiForDoc == "" {
+		// If IMEI is missing, use Client ID (OID or TID) as string
+		imeiForDoc = fmt.Sprintf("%d", clientID)
+	}
+
+	doc := models.NewDocument("egts", imeiForDoc, address)
 	doc.Client = clientID
-	doc.IMEI = h.imei
+	doc.IMEI = imeiForDoc
 	doc.IMSI = h.imsi
 
 	return doc
 }
 
-// saveDocuments сохраняет документы в обе очереди
+// saveDocuments saves documents to both queues
 func (h *ConnectionHandler) saveDocuments(documents []*models.Document) error {
 	ctx := context.Background()
 
-	// Используем batch операции для производительности
-	// Сохраняем в обе очереди (как в Python версии)
+	// Use batch operations for performance
+	// Save to both queues (as in Python version)
 
 	// Queue: charger
 	if err := h.storage.PushBatch(ctx, h.config.QueueCharger, documents); err != nil {
@@ -476,19 +501,19 @@ func (h *ConnectionHandler) sendErrorResponse(packetID uint16, processingResult 
 	return h.sendData(responseData)
 }
 
-// sendData отправляет данные трекеру
+// sendData sends data to tracker
 func (h *ConnectionHandler) sendData(data []byte) error {
-	// Устанавливаем write timeout
+	// Set write timeout
 	if err := h.conn.SetWriteDeadline(time.Now().Add(h.config.WriteTimeout)); err != nil {
 		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
 
-	// Записываем в буфер
+	// Write to buffer
 	if _, err := h.writer.Write(data); err != nil {
 		return fmt.Errorf("failed to write data: %w", err)
 	}
 
-	// Flush буфера
+	// Flush buffer
 	if err := h.writer.Flush(); err != nil {
 		return fmt.Errorf("failed to flush writer: %w", err)
 	}
@@ -497,14 +522,14 @@ func (h *ConnectionHandler) sendData(data []byte) error {
 	return nil
 }
 
-// processResponsePacket обрабатывает EGTS_PT_RESPONSE от трекера (редко)
+// processResponsePacket processes EGTS_PT_RESPONSE from tracker (rare)
 func (h *ConnectionHandler) processResponsePacket(packet *egts.Packet) error {
-	// Обычно сервер не получает RESPONSE от трекера
-	// Но если получили - просто игнорируем
+	// Usually server doesn't receive RESPONSE from tracker
+	// But if we do - just ignore it
 	return nil
 }
 
-// cleanup освобождает ресурсы при завершении обработки
+// cleanup releases resources on connection close
 func (h *ConnectionHandler) cleanup() {
 	h.cancel()
 	h.writer.Flush()
@@ -522,9 +547,9 @@ func (h *ConnectionHandler) Close() error {
 	return h.conn.Close()
 }
 
-// Ошибки
+// Errors
 
-// ProtocolError ошибка протокола
+// ProtocolError represents a protocol error
 type ProtocolError struct {
 	Code    string
 	Message string
@@ -535,7 +560,7 @@ func (e *ProtocolError) Error() string {
 	return fmt.Sprintf("[%s] %s (ip=%s)", e.Code, e.Message, e.IP)
 }
 
-// ConnectionError ошибка подключения
+// ConnectionError represents a connection error
 type ConnectionError struct {
 	Code    string
 	Message string
@@ -545,7 +570,7 @@ func (e *ConnectionError) Error() string {
 	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
 }
 
-// isFatalError определяет, является ли ошибка критической
+// isFatalError determines if an error is fatal
 func isFatalError(err error) bool {
 	switch err.(type) {
 	case *ProtocolError:
@@ -557,12 +582,12 @@ func isFatalError(err error) bool {
 	}
 }
 
-// isCRCError проверяет, является ли ошибка ошибкой CRC
+// isCRCError checks if an error is a CRC error
 func isCRCError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Проверяем текст ошибки
+	// Check error text for CRC-related keywords
 	errStr := err.Error()
 	return len(errStr) > 0 && (errStr[:6] == "невер" || errStr[:9] == "invalid C")
 }

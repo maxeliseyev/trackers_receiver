@@ -48,11 +48,11 @@ func AcceptConnections(listener net.Listener, handler HandlerFunc) {
 		// Accept() блокируется, пока не придёт новое подключение
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Ошибка при подключении клиента:", err)
+			fmt.Println("[ERROR] Client connection error:", err)
 			continue
 		}
 
-		fmt.Println("Новое подключение от:", conn.RemoteAddr())
+		fmt.Println("[INFO] New connection from:", conn.RemoteAddr())
 
 		// Запускаем обработчик в отдельной горутине
 		// Это позволяет серверу принимать новые подключения,
@@ -66,11 +66,11 @@ func HandleConnections(listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Ошибка при подключении клиента:", err)
+			fmt.Println("[ERROR] Client connection error:", err)
 			continue
 		}
 
-		fmt.Println("Новое подключение от:", conn.RemoteAddr())
+		fmt.Println("[INFO] New connection from:", conn.RemoteAddr())
 		conn.Close()
 	}
 }

@@ -192,7 +192,7 @@ func parseHeader(data []byte) (*PacketHeader, error) {
 		return nil, err
 	}
 
-	// TODO: Опциональные поля Transport Layer Header (зависят от флага Route)
+	// NOTE: Опциональные поля Transport Layer Header (зависят от флага Route)
 	// Согласно спецификации EGTS (ГОСТ Р 54619-2011), если флаг RTE (Route) установлен,
 	// то после базовых полей заголовка следуют дополнительные поля:
 	// - PRA (2 байта) - Peer Address (адрес получателя)
@@ -351,7 +351,8 @@ func parseSubRecords(data []byte) ([]*SubRecord, error) {
 		dataEnd := dataStart + int(subRecord.Length)
 
 		if dataEnd > len(data) {
-			return nil, fmt.Errorf("некорректная длина подзаписи")
+			return nil, fmt.Errorf("некорректная длина подзаписи: type=%d, length=%d, dataEnd=%d, available=%d, offset=%d",
+				subRecord.Type, subRecord.Length, dataEnd, len(data), offset)
 		}
 
 		subRecord.Data = data[dataStart:dataEnd]
