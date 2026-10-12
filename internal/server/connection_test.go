@@ -106,7 +106,7 @@ func TestAppdataProcessing(t *testing.T) {
 
 	identity := make([]byte, 5+15)
 	binary.LittleEndian.PutUint32(identity, 42) // TID
-	identity[4] = 0x40                          // IMEIE
+	identity[4] = 0x02                          // IMEIE
 	copy(identity[5:], "123456789012345")
 
 	packet := appdataPacket(77,
@@ -156,11 +156,11 @@ func TestAppdataProcessing(t *testing.T) {
 	}
 	for i, wantPDOP := range []uint16{2, 3} {
 		d := docs[i]
-		if d.IMEI != "123456789012345" || d.Client != 1000 {
+		if string(d.IMEI) != "123456789012345" || d.Client != 1000 {
 			t.Errorf("document %d: IMEI = %q, client = %d", i, d.IMEI, d.Client)
 		}
-		if d.NavData.PDOP == nil || *d.NavData.PDOP != wantPDOP {
-			t.Errorf("document %d: PDOP = %v; expected %d", i, d.NavData.PDOP, wantPDOP)
+		if d.Nav.Ext == nil || d.Nav.Ext.PDOP == nil || *d.Nav.Ext.PDOP != wantPDOP {
+			t.Errorf("document %d: ext = %+v; expected PDOP %d", i, d.Nav.Ext, wantPDOP)
 		}
 	}
 }

@@ -304,7 +304,7 @@ type PositionData struct {
 	NavigationTime time.Time
 	Latitude       float64 // degrees
 	Longitude      float64 // degrees
-	Speed          int     // km/h, rounded
+	Speed          int     // km/h
 	Course         int     // degrees
 	Odometer       uint32  // metres
 	Altitude       *int32  // metres, nil when ALTE=0
@@ -362,7 +362,8 @@ func GetPositionData(sr *SubRecord) (*PositionData, error) {
 
 	// SPD: DIRH(15) ALTS(14) speed in 0.1 km/h (13-0). DIRH is the 9th bit
 	// of the course; DIR holds the lower 8.
-	pos.Speed = int(math.Round(float64(spd&0x3FFF) / 10.0))
+	// Rounded half to even, like Python's round() in the previous receiver.
+	pos.Speed = int(math.RoundToEven(float64(spd&0x3FFF) / 10.0))
 	pos.Course = int(spd>>15)<<8 | int(dir)
 
 	// ODM is in units of 0.1 km.
@@ -400,8 +401,8 @@ type StateData struct {
 type TermIdentity struct {
 	TerminalID     uint32
 	HomeDispatcher *uint16
-	IMEI           string
-	IMSI           string
+	IMEI           []byte // as transmitted, NUL padding included; nil when absent
+	IMSI           []byte
 	LanguageCode   string
 	NetworkID      []byte
 	BufferSize     *uint16
@@ -492,29 +493,27 @@ func GetTermIdentity(sr *SubRecord) (*TermIdentity, error) {
 	flags := sr.Data[4]
 	r := bytes.NewReader(sr.Data[5:])
 
-	// Bits 7..1: HDIDE, IMEIE, IMSIE, LNGCE, NIDE, BSE, MSISDNE.
-	if flags&0x80 != 0 {
+	// FLG: MNE(7) BSE(6) NIDE(5) SSRA(4) LNGCE(3) IMSIE(2) IMEIE(1) HDIDE(0).
+	// SSRA selects the authentication mode and has no field.
+	if flags&0x01 != 0 {
 		identity.HomeDispatcher = readUint16(r)
 	}
-	if flags&0x40 != 0 {
-		identity.IMEI = readString(r, 15)
-	}
-	if flags&0x20 != 0 {
-		identity.IMSI = readString(r, 16)
-	}
-	if flags&0x10 != 0 {
-		identity.LanguageCode = readString(r, 3)
-	}
-	if flags&0x08 != 0 {
-		nid := make([]byte, 3)
-		if _, err := io.ReadFull(r, nid); err == nil {
-			identity.NetworkID = nid
-		}
+	if flags&0x02 != 0 {
+		identity.IMEI = readBytes(r, 15)
 	}
 	if flags&0x04 != 0 {
+		identity.IMSI = readBytes(r, 16)
+	}
+	if flags&0x08 != 0 {
+		identity.LanguageCode = readString(r, 3)
+	}
+	if flags&0x20 != 0 {
+		identity.NetworkID = readBytes(r, 3)
+	}
+	if flags&0x40 != 0 {
 		identity.BufferSize = readUint16(r)
 	}
-	if flags&0x02 != 0 {
+	if flags&0x80 != 0 {
 		identity.MSISDN = readString(r, 15)
 	}
 
@@ -530,13 +529,17 @@ func readUint16(r *bytes.Reader) *uint16 {
 	return &v
 }
 
-// readString reads a fixed-width, NUL-padded string field.
-func readString(r *bytes.Reader, n int) string {
+func readBytes(r *bytes.Reader, n int) []byte {
 	buf := make([]byte, n)
 	if _, err := io.ReadFull(r, buf); err != nil {
-		return ""
+		return nil
 	}
-	return string(bytes.TrimRight(buf, "\x00"))
+	return buf
+}
+
+// readString reads a fixed-width, NUL-padded string field.
+func readString(r *bytes.Reader, n int) string {
+	return string(bytes.TrimRight(readBytes(r, n), "\x00"))
 }
 
 // GetADSensorsData decodes EGTS_SR_AD_SENSORS_DATA.
@@ -610,13 +613,13 @@ func GetLiquidLevelData(sr *SubRecord) (*LiquidLevelData, error) {
 	var level uint32
 	if flags&0x08 == 0 {
 		if len(llsd) < 4 {
-			return liquid, nil
+			return nil, fmt.Errorf("SR_LIQUID_LEVEL_SENSOR truncated: %d bytes of LLSD, need 4", len(llsd))
 		}
 		level = binary.LittleEndian.Uint32(llsd)
 	} else {
-		n := int(sr.Length) - 3
-		if n <= 0 || n > 8 || n > len(llsd) {
-			return liquid, nil
+		n := len(llsd)
+		if n == 0 || n > 8 {
+			return nil, fmt.Errorf("SR_LIQUID_LEVEL_SENSOR: %d bytes of raw LLSD", n)
 		}
 		for i := range min(n, 4) {
 			level |= uint32(llsd[i]) << (8 * i)

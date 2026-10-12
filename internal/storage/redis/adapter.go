@@ -52,7 +52,8 @@ type Config struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
-	// QueueMaxLengths caps each listed queue with LTRIM after every push.
+	// QueueMaxLengths caps each listed queue with LTRIM after every push. As in
+	// the Python receiver, LTRIM 0 max keeps max+1 entries.
 	QueueMaxLengths map[string]int64
 
 	// MaxLatencySamples bounds the window used for latency percentiles.
@@ -153,7 +154,7 @@ func (rs *RedisStorage) PushBatch(ctx context.Context, queue string, docs []*mod
 		bytes += int64(len(data))
 	}
 	if maxLen, ok := rs.config.QueueMaxLengths[queue]; ok {
-		pipe.LTrim(ctx, queue, 0, maxLen-1)
+		pipe.LTrim(ctx, queue, 0, maxLen)
 	}
 
 	if _, err := pipe.Exec(ctx); err != nil {
@@ -171,7 +172,7 @@ func (rs *RedisStorage) PushRaw(ctx context.Context, queue string, data []byte) 
 	pipe := rs.client.Pipeline()
 	pipe.LPush(ctx, queue, data)
 	if maxLen, ok := rs.config.QueueMaxLengths[queue]; ok {
-		pipe.LTrim(ctx, queue, 0, maxLen-1)
+		pipe.LTrim(ctx, queue, 0, maxLen)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		rs.totalFailed.Add(1)

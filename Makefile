@@ -23,6 +23,10 @@ test-integration: ## Run integration tests (requires Redis)
 	@echo "Running integration tests..."
 	go test -v ./test/integration/...
 
+test-parity: ## Compare documents with the Python receiver (PYTHON_RECEIVER_SRC=..., needs uv)
+	@echo "Comparing with the Python receiver..."
+	go test -v -count=1 ./test/parity/...
+
 test-coverage: ## Run tests with coverage
 	@echo "Running tests with coverage..."
 	go test -v -coverprofile=coverage.out ./...

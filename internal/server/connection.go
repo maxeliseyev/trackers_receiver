@@ -9,7 +9,7 @@ import (
 	"io"
 	"log"
 	"net"
-	"strconv"
+	"slices"
 	"time"
 
 	"trackers-receiver/internal/egts"
@@ -32,10 +32,13 @@ type ConnectionHandler struct {
 	lastValidReport time.Time
 
 	// Identity reported by the tracker; persists across packets.
-	imei string
-	imsi string
+	imei []byte
+	imsi []byte
 	oid  uint32
 	tid  uint32
+
+	address      models.Address
+	nphRequestID uint32 // see models.Document.NPHRequestID
 
 	pid uint16 // ID of the next packet sent to the tracker
 }
@@ -74,6 +77,7 @@ func NewConnectionHandler(conn net.Conn, stor storage.QueueStorage, config *Conn
 		storage:    stor,
 		config:     config,
 		remoteAddr: conn.RemoteAddr().String(),
+		address:    clientAddress(conn.RemoteAddr()),
 	}
 }
 
@@ -178,6 +182,7 @@ func (h *ConnectionHandler) handlePacket(raw []byte) error {
 // A record is confirmed even if some of its subrecords are malformed: resending
 // the same bytes would not fix them.
 func (h *ConnectionHandler) processAppdataPacket(packet *egts.Packet) error {
+	h.nphRequestID = uint32(packet.Header.PacketID)
 	var documents []*models.Document
 	confirmations := make([]egts.RecordConfirmation, 0, len(packet.Records))
 	identified := false
@@ -196,6 +201,9 @@ func (h *ConnectionHandler) processAppdataPacket(packet *egts.Packet) error {
 	}
 
 	if len(documents) > 0 {
+		slices.SortStableFunc(documents, func(a, b *models.Document) int {
+			return a.Nav.Timestamp.Compare(b.Nav.Timestamp)
+		})
 		// The packet is acknowledged even if saving fails: the tracker would
 		// otherwise resend it forever while storage is down.
 		if err := h.saveDocuments(documents); err != nil {
@@ -212,144 +220,6 @@ func (h *ConnectionHandler) processAppdataPacket(packet *egts.Packet) error {
 		return h.write(egts.BuildResultCode(pid, pid, egts.ProcessingResultOK))
 	}
 	return nil
-}
-
-// processAuthRecord remembers the terminal's identity and reports whether the
-// record carried EGTS_SR_TERM_IDENTITY.
-func (h *ConnectionHandler) processAuthRecord(record *egts.Record) bool {
-	identified := false
-	for _, sr := range record.SubRecords {
-		if sr.Type != egts.SrTermIdentity {
-			continue
-		}
-		identified = true
-		identity, err := egts.GetTermIdentity(sr)
-		if err != nil {
-			log.Printf("[WARN] %s: record %d: %v", h.remoteAddr, record.RecordNumber, err)
-			continue
-		}
-		h.imei = identity.IMEI
-		h.imsi = identity.IMSI
-		h.tid = identity.TerminalID
-	}
-	return identified
-}
-
-// processTeledataRecord makes a document for every EGTS_SR_POS_DATA in the
-// record. The subrecords that follow a SR_POS_DATA add to its document;
-// those before the first one have no position to belong to and are ignored.
-func (h *ConnectionHandler) processTeledataRecord(record *egts.Record) []*models.Document {
-	var documents []*models.Document
-	var doc *models.Document
-
-	for _, sr := range record.SubRecords {
-		if sr.Type == egts.SrPosData {
-			doc = nil
-			pos, err := egts.GetPositionData(sr)
-			if err != nil {
-				log.Printf("[WARN] %s: record %d: %v", h.remoteAddr, record.RecordNumber, err)
-				continue
-			}
-			doc = h.createDocument()
-			doc.SetNavigationData(&models.NavigationData{
-				Timestamp: pos.NavigationTime,
-				Longitude: pos.Longitude,
-				Latitude:  pos.Latitude,
-				Speed:     pos.Speed,
-				Course:    pos.Course,
-				Track:     pos.Odometer,
-				Altitude:  pos.Altitude,
-				Source:    pos.Source,
-				ExtraDOP:  pos.ExtraDOP,
-			})
-			doc.SetPosDataExtras(pos.DigitalInputs, pos.Odometer)
-			documents = append(documents, doc)
-			continue
-		}
-		if doc == nil {
-			continue
-		}
-
-		switch sr.Type {
-		case egts.SrExtPosData:
-			ext, err := egts.GetExtPosData(sr)
-			if err != nil {
-				continue
-			}
-			doc.NavData.PDOP = scaleDOP(ext.PDOP)
-			doc.NavData.HDOP = scaleDOP(ext.HDOP)
-			doc.NavData.VDOP = scaleDOP(ext.VDOP)
-			doc.NavData.Satellites = ext.Satellites
-
-		case egts.SrStateData:
-			state, err := egts.GetStateData(sr)
-			if err != nil {
-				continue
-			}
-			doc.NavData.BatVoltage = &state.InternalBatVoltage
-			doc.NavData.MainPowerVol = &state.MainPowerVoltage
-			doc.NavData.BuiltinAcc = &state.BackupBatVoltage
-
-		case egts.SrLiquidLevel:
-			liquid, err := egts.GetLiquidLevelData(sr)
-			if err != nil {
-				continue
-			}
-			sensor := map[string]any{
-				"nav_data_number": liquid.NavDataNumber,
-				"det_status":      liquid.SensorErrorStatus,
-			}
-			if liquid.LevelMM != nil {
-				sensor["level_mm"] = *liquid.LevelMM
-			}
-			if liquid.LevelL != nil {
-				sensor["level_l"] = *liquid.LevelL
-			}
-			doc.AddLiquidLevelSensor(sensor)
-
-		case egts.SrAbsCntrData:
-			counter, err := egts.GetCounterData(sr)
-			if err != nil {
-				continue
-			}
-			if counter.CounterTime != nil {
-				doc.AddCounter(counter.CounterNumber, *counter.CounterTime)
-			} else {
-				doc.AddCounter(counter.CounterNumber, counter.CounterValue)
-			}
-		}
-	}
-
-	return documents
-}
-
-// scaleDOP converts a DOP transmitted multiplied by 100 to whole units,
-// rounding up as the Python receiver did.
-func scaleDOP(v *uint16) *uint16 {
-	if v == nil {
-		return nil
-	}
-	s := (*v + 99) / 100
-	return &s
-}
-
-func (h *ConnectionHandler) createDocument() *models.Document {
-	host, port, _ := net.SplitHostPort(h.remoteAddr)
-
-	clientID := h.oid
-	if clientID == 0 {
-		clientID = h.tid
-	}
-
-	imei := h.imei
-	if imei == "" {
-		imei = strconv.FormatUint(uint64(clientID), 10)
-	}
-
-	doc := models.NewDocument("egts", imei, [2]any{host, port})
-	doc.Client = clientID
-	doc.IMSI = h.imsi
-	return doc
 }
 
 // saveDocuments writes the documents to both queues, as the Python receiver did.

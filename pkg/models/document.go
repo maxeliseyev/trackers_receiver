@@ -1,151 +1,199 @@
 package models
 
 import (
-	"strconv"
+	"fmt"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
-// Document is the protocol-independent record pushed to the queues.
-// Field names and msgpack tags must stay compatible with the Python receiver.
+// Document is one navigation point as pushed to the queues. Its msgpack
+// encoding reproduces the documents of the Python receiver key for key,
+// because the consumers decode them with that receiver's utils/pack.py.
 type Document struct {
-	Client     uint32    `msgpack:"client"` // OID, or TID when OID is absent
-	Source     string    `msgpack:"source"` // protocol name, e.g. "egts"
-	DateCreate time.Time `msgpack:"date_create"`
-	IMEI       string    `msgpack:"imei"`
-	IMSI       string    `msgpack:"imsi"`
-	Address    [2]any    `msgpack:"address"` // [host, port] of the tracker
-	Version    string    `msgpack:"version"`
+	Client       uint32 // OID, or TID when OID is absent
+	DateCreate   time.Time
+	NPHRequestID uint32 // PID of the packet, or the value of counter 110
+	Nav          NavigationData
 
-	NavData  *NavigationData `msgpack:"nav_data"`
-	Location *GeoLocation    `msgpack:"loc"`
+	DigitalInputs uint8  // DIN
+	Odometer      uint32 // metres
 
-	DataType2  map[string]any   `msgpack:"data_type_2,omitempty"`  // SR_POS_DATA extras
-	DataType8  []map[string]any `msgpack:"data_type_8,omitempty"`  // SR_LIQUID_LEVEL_SENSOR, one entry per sensor
-	DataType23 map[string]any   `msgpack:"data_type_23,omitempty"` // SR_ABS_CNTR_DATA
+	LiquidLevels []LiquidLevel     // data_type_8, one entry per sensor
+	Counters     map[string]any    // data_type_23
+	ADSensors    map[string]any    // egts_sr_ad_sensors_data
+	AbsAnalog    map[string]uint32 // egts_sr_abs_an_sens_data, "asn_<n>"
 
-	SensorData map[string]any   `msgpack:"egts_sr_ad_sensors_data,omitempty"`
-	AnalogData map[string]int32 `msgpack:"egts_sr_abs_an_sens_data,omitempty"`
+	// IMEI and IMSI are sent as transmitted in EGTS_SR_TERM_IDENTITY, NUL
+	// padding included, and as an empty string when the terminal did not
+	// identify itself on this connection.
+	IMEI    []byte
+	IMSI    []byte
+	Address Address
 }
 
 type NavigationData struct {
-	Timestamp time.Time `msgpack:"time_stamp"`
+	Timestamp time.Time
+	Latitude  float64
+	Longitude float64
+	Speed     int    // km/h
+	Course    int    // degrees
+	Altitude  *int32 // metres, nil when not transmitted
+	ExtraDOP  uint8  // VLD<<7 | LOHS<<6 | LAHS<<5
+	Source    uint8  // SRC
 
-	Longitude float64 `msgpack:"longitude"`
-	Latitude  float64 `msgpack:"latitude"`
-
-	Speed    int  `msgpack:"speed_avg"` // km/h
-	SpeedMax *int `msgpack:"speed_max"`
-	Course   int  `msgpack:"course"` // degrees, 0-359
-
-	Altitude *int32 `msgpack:"altitude"` // metres
-	Track    uint32 `msgpack:"track"`    // odometer, metres
-
-	Satellites *uint8  `msgpack:"nsat"`
-	PDOP       *uint16 `msgpack:"pdop"`
-	HDOP       *uint16 `msgpack:"hdop"`
-	VDOP       *uint16 `msgpack:"vdop"`
-
-	// Voltages in units of 0.1 V.
-	BatVoltage   *uint8 `msgpack:"bat_voltage"`
-	BuiltinAcc   *uint8 `msgpack:"builtin_acc"`
-	MainPowerVol *uint8 `msgpack:"mpsv"`
-
-	ExtraDOP    uint8  `msgpack:"extra_dop"` // VLD<<7 | LOHS<<6 | LAHS<<5
-	ExtraDOPBin string `msgpack:"extra_dop_bin"`
-	Source      uint8  `msgpack:"src"`
+	// Ext is set by EGTS_SR_EXT_POS_DATA, State by EGTS_SR_STATE_DATA. The
+	// keys they fill are absent from the document without them.
+	Ext   *ExtPosition
+	State *State
 }
 
-// GeoLocation is a GeoJSON point. Coordinates are stored as [lat, lon], not the
-// GeoJSON-standard [lon, lat], because downstream consumers expect that order.
-type GeoLocation struct {
-	Type        string     `msgpack:"type"`
-	Coordinates [2]float64 `msgpack:"coordinates"`
+type ExtPosition struct {
+	Satellites *uint8
+	PDOP       *uint16 // whole units; the smaller of PDOP and HDOP
 }
 
-func NewDocument(source string, imei string, address [2]any) *Document {
-	return &Document{
-		Source:     source,
-		IMEI:       imei,
-		Address:    address,
-		DateCreate: time.Now().UTC(),
-		Version:    "1.0.1",
-		NavData:    &NavigationData{},
-		Location:   &GeoLocation{Type: "Point"},
+// State holds voltages in units of 0.1 V.
+type State struct {
+	MainPower     uint8
+	BackupBattery uint8
+	Battery       uint8
+}
+
+type LiquidLevel struct {
+	Sensor uint8
+	Error  uint8
+	MM     *uint32
+	Litres *uint32 // the raw value multiplied by 10, as the Python receiver stored it
+}
+
+type Address struct {
+	IP   string
+	Port int
+}
+
+const (
+	source  = "egts"
+	version = "1.0.1"
+)
+
+// pair is a map entry; maps are written as pair lists to keep the key order
+// of the Python receiver, which makes the two outputs easy to compare.
+type pair struct {
+	key   string
+	value any
+}
+
+type orderedMap []pair
+
+func (m orderedMap) EncodeMsgpack(enc *msgpack.Encoder) error {
+	if err := enc.EncodeMapLen(len(m)); err != nil {
+		return err
 	}
-}
-
-// SetNavigationData also updates Location from the new coordinates.
-func (d *Document) SetNavigationData(nav *NavigationData) {
-	d.NavData = nav
-	if nav != nil {
-		d.Location = &GeoLocation{
-			Type:        "Point",
-			Coordinates: [2]float64{nav.Latitude, nav.Longitude},
+	for _, p := range m {
+		if err := enc.EncodeString(p.key); err != nil {
+			return err
 		}
-	}
-}
-
-func (d *Document) AddLiquidLevelSensor(sensor map[string]any) {
-	d.DataType8 = append(d.DataType8, sensor)
-}
-
-func (d *Document) SetPosDataExtras(digitalInputs uint8, odometer uint32) {
-	if d.DataType2 == nil {
-		d.DataType2 = make(map[string]any)
-	}
-	d.DataType2["di_in"] = digitalInputs
-	d.DataType2["odometer"] = odometer
-}
-
-var counterNames = map[uint8]string{
-	100: "cnt_ack",
-	101: "cnt_noack",
-	102: "cnt_connect",
-	103: "egts_new_mark",
-	104: "egts_old_mark",
-	105: "egts_old_mark_time",
-}
-
-// AddCounter stores the value under the counter's well-known name (or its number),
-// and also as the last seen pair under "cn"/"cnv".
-func (d *Document) AddCounter(counterNumber uint8, value any) {
-	if d.DataType23 == nil {
-		d.DataType23 = make(map[string]any)
-	}
-
-	name, ok := counterNames[counterNumber]
-	if !ok {
-		name = strconv.Itoa(int(counterNumber))
-	}
-	d.DataType23[name] = value
-	d.DataType23["cn"] = counterNumber
-	d.DataType23["cnv"] = value
-}
-
-func (d *Document) Validate() error {
-	if d.Source == "" {
-		return ErrInvalidSource
-	}
-	if d.IMEI == "" {
-		return ErrMissingIMEI
-	}
-	if d.NavData == nil {
-		return ErrMissingNavData
+		if err := enc.Encode(p.value); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-var (
-	ErrInvalidSource  = &DocumentError{Code: "INVALID_SOURCE", Message: "source cannot be empty"}
-	ErrMissingIMEI    = &DocumentError{Code: "MISSING_IMEI", Message: "IMEI is required"}
-	ErrMissingNavData = &DocumentError{Code: "MISSING_NAV_DATA", Message: "navigation data is required"}
-)
+// naiveTime is a datetime without a time zone in the receiver's pack.py
+// encoding: {"__dt__": datetime.isoformat()}. isoformat omits the fraction
+// when there are no microseconds.
+type naiveTime time.Time
 
-type DocumentError struct {
-	Code    string
-	Message string
+func (t naiveTime) EncodeMsgpack(enc *msgpack.Encoder) error {
+	tt := time.Time(t).UTC()
+	s := tt.Format("2006-01-02T15:04:05")
+	if us := tt.Nanosecond() / 1000; us != 0 {
+		s += fmt.Sprintf(".%06d", us)
+	}
+	return enc.Encode(orderedMap{{"__dt__", s}})
 }
 
-func (e *DocumentError) Error() string {
-	return e.Message
+// EncodeMsgpack writes the document as the Python receiver did.
+func (d *Document) EncodeMsgpack(enc *msgpack.Encoder) error {
+	doc := orderedMap{
+		{"data_type_2", orderedMap{{"di_in", d.DigitalInputs}, {"odometer", d.Odometer}}},
+		{"client", d.Client},
+		{"source", source},
+		{"date_create", naiveTime(d.DateCreate)},
+		{"nph_request_id", d.NPHRequestID},
+		{"nav_data", d.navFields()},
+		{"loc", orderedMap{{"type", "Point"}, {"coordinates", []float64{d.Nav.Latitude, d.Nav.Longitude}}}},
+	}
+	if d.ADSensors != nil {
+		doc = append(doc, pair{"egts_sr_ad_sensors_data", d.ADSensors})
+	}
+	if len(d.LiquidLevels) > 0 {
+		levels := make([]orderedMap, len(d.LiquidLevels))
+		for i, l := range d.LiquidLevels {
+			// "det_dtatus" is misspelt in the Python receiver, and consumers use that key.
+			levels[i] = orderedMap{{"nav_data_number", l.Sensor}, {"det_dtatus", l.Error}}
+			if l.MM != nil {
+				levels[i] = append(levels[i], pair{"level_mm", *l.MM})
+			}
+			if l.Litres != nil {
+				levels[i] = append(levels[i], pair{"level_l", *l.Litres})
+			}
+		}
+		doc = append(doc, pair{"data_type_8", levels})
+	}
+	if d.AbsAnalog != nil {
+		doc = append(doc, pair{"egts_sr_abs_an_sens_data", d.AbsAnalog})
+	}
+	if d.Counters != nil {
+		counters := make(map[string]any, len(d.Counters))
+		for k, v := range d.Counters {
+			if t, ok := v.(time.Time); ok {
+				v = naiveTime(t)
+			}
+			counters[k] = v
+		}
+		doc = append(doc, pair{"data_type_23", counters})
+	}
+	doc = append(doc,
+		pair{"imei", identityField(d.IMEI)},
+		pair{"imsi", identityField(d.IMSI)},
+		pair{"address", []any{d.Address.IP, d.Address.Port}},
+		pair{"version", version},
+	)
+	return enc.Encode(doc)
+}
+
+func (d *Document) navFields() orderedMap {
+	n := &d.Nav
+	m := orderedMap{
+		{"time_stamp", naiveTime(n.Timestamp)},
+		{"longitude", n.Longitude},
+		{"latitude", n.Latitude},
+		{"bat_voltage", nil},
+		{"speed_avg", n.Speed},
+		{"speed_max", nil},
+		{"course", n.Course},
+		{"track", d.Odometer},
+		{"altitude", n.Altitude},
+		{"extra_dop", n.ExtraDOP},
+		{"extra_dop_bin", fmt.Sprintf("%08b", n.ExtraDOP)},
+		{"src", n.Source},
+	}
+	if n.Ext != nil {
+		m = append(m, pair{"nsat", n.Ext.Satellites}, pair{"pdop", n.Ext.PDOP})
+	}
+	if n.State != nil {
+		m[3].value = n.State.Battery
+		m = append(m, pair{"builtin_acc", n.State.BackupBattery}, pair{"mpsv", n.State.MainPower})
+	}
+	return m
+}
+
+func identityField(b []byte) any {
+	if b == nil {
+		return ""
+	}
+	return b
 }
