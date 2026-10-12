@@ -130,7 +130,11 @@ func (s *Server) serveConn(conn net.Conn) {
 		s.mu.Unlock()
 	}()
 
-	err := NewConnectionHandler(conn, s.storage, s.connConfig).Handle()
+	handler := NewConnectionHandler(conn, s.storage, s.connConfig)
+	if s.rateLimiter != nil {
+		handler.OnValidPacket = func() { s.rateLimiter.RecordValidTraffic(conn) }
+	}
+	err := handler.Handle()
 	if err == nil {
 		s.stats.TotalProcessed.Add(1)
 		return

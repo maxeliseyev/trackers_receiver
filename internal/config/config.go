@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
-	Server ServerConfig
-	Redis  RedisConfig
-	Queue  QueueConfig
+	Server    ServerConfig
+	Redis     RedisConfig
+	Queue     QueueConfig
+	RateLimit RateLimitConfig
 }
 
 type ServerConfig struct {
@@ -37,6 +39,20 @@ type QueueConfig struct {
 	FasttrackMaxLen int
 }
 
+// RateLimitConfig limits new connections per source IP. IPs that sent a valid
+// packet within the last hour are exempt, so the limits only bite on unknown
+// addresses; they are loose because a retranslator reconnecting after a restart
+// is unknown too (production peak: 113 connections in 10 s from one IP).
+type RateLimitConfig struct {
+	Enabled       bool
+	MaxPerWindow  int
+	Window        time.Duration
+	BlockDuration time.Duration // first block; doubles on each repeat
+	// Whitelist must include any load balancer in front of the receiver,
+	// otherwise all trackers appear to come from its address.
+	Whitelist []string
+}
+
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
@@ -58,6 +74,13 @@ func Load() (*Config, error) {
 			ChargerMaxLen:   getEnvAsInt("QUEUE_CHARGER_MAX_LEN", 2999999),
 			FasttrackName:   getEnv("QUEUE_FASTTRACK_NAME", "fasttrack"),
 			FasttrackMaxLen: getEnvAsInt("QUEUE_FASTTRACK_MAX_LEN", 2999999),
+		},
+		RateLimit: RateLimitConfig{
+			Enabled:       getEnvAsBool("RATE_LIMIT_ENABLED", true),
+			MaxPerWindow:  getEnvAsInt("RATE_LIMIT_MAX_PER_WINDOW", 300),
+			Window:        getEnvAsDuration("RATE_LIMIT_WINDOW", 10*time.Second),
+			BlockDuration: getEnvAsDuration("RATE_LIMIT_BLOCK_DURATION", time.Minute),
+			Whitelist:     getEnvAsList("RATE_LIMIT_WHITELIST", []string{"127.0.0.1", "::1"}),
 		},
 	}
 
@@ -97,6 +120,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("fasttrack queue name cannot be empty")
 	}
 
+	if c.RateLimit.Enabled && (c.RateLimit.MaxPerWindow < 1 || c.RateLimit.Window <= 0 || c.RateLimit.BlockDuration <= 0) {
+		return fmt.Errorf("rate limit settings must be positive")
+	}
+
 	return nil
 }
 
@@ -119,6 +146,28 @@ func getEnvAsInt(key string, defaultValue int) int {
 	}
 
 	return value
+}
+
+func getEnvAsBool(key string, defaultValue bool) bool {
+	value, err := strconv.ParseBool(os.Getenv(key))
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// getEnvAsList reads a comma-separated list. An empty variable yields the default.
+func getEnvAsList(key string, defaultValue []string) []string {
+	var list []string
+	for item := range strings.SplitSeq(os.Getenv(key), ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			list = append(list, item)
+		}
+	}
+	if len(list) == 0 {
+		return defaultValue
+	}
+	return list
 }
 
 // getEnvAsDuration reads a whole number of seconds.

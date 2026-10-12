@@ -342,3 +342,69 @@ func BenchmarkRateLimiterConcurrent(b *testing.B) {
 		}
 	})
 }
+
+func TestTrustedIPIsNotBlockedForProtocolErrors(t *testing.T) {
+	rl := NewRateLimiter(DefaultRateLimiterConfig())
+	defer rl.Stop()
+
+	conn := newMockConn("100.64.0.1")
+	rl.RecordValidTraffic(conn)
+	for range 20 {
+		rl.RecordProtocolError(conn)
+	}
+
+	if !rl.Allow(conn) {
+		t.Error("IP that sent valid traffic was blocked for protocol errors")
+	}
+}
+
+func TestTrustedIPBypassesConnectionLimit(t *testing.T) {
+	rl := NewRateLimiter(&RateLimiterConfig{
+		MaxConnectionsPerWindow: 2,
+		WindowDuration:          time.Minute,
+		BlockDuration:           time.Minute,
+		CleanupInterval:         time.Minute,
+	})
+	defer rl.Stop()
+
+	conn := newMockConn("100.64.0.2")
+	rl.RecordValidTraffic(conn)
+	for i := range 10 {
+		if !rl.Allow(conn) {
+			t.Fatalf("connection %d from a trusted IP was rejected", i)
+		}
+	}
+}
+
+func TestValidTrafficLiftsBlock(t *testing.T) {
+	rl := NewRateLimiter(DefaultRateLimiterConfig())
+	defer rl.Stop()
+
+	conn := newMockConn("100.64.0.3")
+	for range 10 {
+		rl.RecordProtocolError(conn)
+	}
+	if rl.Allow(conn) {
+		t.Fatal("IP was not blocked after protocol errors")
+	}
+
+	rl.RecordValidTraffic(conn)
+	if !rl.Allow(conn) {
+		t.Error("block was not lifted by valid traffic")
+	}
+	if blocked := rl.GetBlockedIPs(); len(blocked) != 0 {
+		t.Errorf("GetBlockedIPs = %v; expected none", blocked)
+	}
+}
+
+func TestCleanupKeepsTrustedIPs(t *testing.T) {
+	rl := NewRateLimiter(DefaultRateLimiterConfig())
+	defer rl.Stop()
+
+	rl.RecordValidTraffic(newMockConn("100.64.0.4"))
+	rl.cleanup()
+
+	if got := rl.Stats()["total_ips"]; got != int32(1) {
+		t.Errorf("total_ips = %v after cleanup; expected the trusted IP to be kept", got)
+	}
+}

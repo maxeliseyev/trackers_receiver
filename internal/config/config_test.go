@@ -127,11 +127,49 @@ func TestGetServerAddr(t *testing.T) {
 	}
 }
 
+func TestRateLimitConfig(t *testing.T) {
+	clearEnv()
+	defer clearEnv()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rl := cfg.RateLimit
+	if !rl.Enabled || rl.MaxPerWindow != 300 || rl.Window != 10*time.Second || rl.BlockDuration != time.Minute {
+		t.Errorf("unexpected defaults: %+v", rl)
+	}
+	if len(rl.Whitelist) != 2 {
+		t.Errorf("Whitelist = %v; expected loopback addresses", rl.Whitelist)
+	}
+
+	os.Setenv("RATE_LIMIT_ENABLED", "false")
+	os.Setenv("RATE_LIMIT_WHITELIST", " 10.0.0.1, ,10.0.0.2 ")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RateLimit.Enabled {
+		t.Error("RATE_LIMIT_ENABLED=false was ignored")
+	}
+	if got := cfg.RateLimit.Whitelist; len(got) != 2 || got[0] != "10.0.0.1" || got[1] != "10.0.0.2" {
+		t.Errorf("Whitelist = %q; expected [10.0.0.1 10.0.0.2]", got)
+	}
+
+	os.Setenv("RATE_LIMIT_ENABLED", "true")
+	os.Setenv("RATE_LIMIT_MAX_PER_WINDOW", "0")
+	if _, err := Load(); err == nil {
+		t.Error("expected an error for RATE_LIMIT_MAX_PER_WINDOW=0")
+	}
+}
+
 func clearEnv() {
 	envVars := []string{
 		"SERVER_PORT", "SERVER_READ_TIMEOUT", "SERVER_WRITE_TIMEOUT", "SERVER_MAX_CONNECTIONS",
 		"REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "REDIS_DB", "REDIS_POOL_SIZE", "REDIS_MAX_RETRIES",
 		"QUEUE_CHARGER_NAME", "QUEUE_CHARGER_MAX_LEN", "QUEUE_FASTTRACK_NAME", "QUEUE_FASTTRACK_MAX_LEN",
+		"RATE_LIMIT_ENABLED", "RATE_LIMIT_MAX_PER_WINDOW", "RATE_LIMIT_WINDOW", "RATE_LIMIT_BLOCK_DURATION",
+		"RATE_LIMIT_WHITELIST",
 	}
 
 	for _, key := range envVars {

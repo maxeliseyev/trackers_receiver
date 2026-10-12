@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -72,6 +73,13 @@ func TestManyConcurrentConnections(t *testing.T) {
 
 	startTime := time.Now()
 	for i := range numConnections {
+		// Dial sequentially: a burst of simultaneous dials overflows the kernel
+		// accept backlog (128 on macOS) and gets reset before the server sees it.
+		conn, err := net.Dial("tcp", serverAddr)
+		if err != nil {
+			t.Fatalf("connection %d: dial: %v", i, err)
+		}
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -81,12 +89,6 @@ func TestManyConcurrentConnections(t *testing.T) {
 					answered.Done()
 				}
 			}()
-
-			conn, err := net.Dial("tcp", serverAddr)
-			if err != nil {
-				t.Logf("connection %d: dial: %v", i, err)
-				return
-			}
 			defer conn.Close()
 
 			conn.SetDeadline(time.Now().Add(10 * time.Second))
@@ -184,53 +186,67 @@ func TestRateLimiterIntegration(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Try to connect 10 times rapidly from same IP
-	packet := buildTestEGTSPacket()
-	successCount := 0
-
-	for i := 0; i < 10; i++ {
+	// accepted reports whether the server kept a silent connection open.
+	// A rate-limited one is accepted by the kernel and closed right away.
+	accepted := func() bool {
 		conn, err := net.Dial("tcp", serverAddr)
 		if err != nil {
-			t.Logf("Connection %d failed: %v", i, err)
-			continue
+			t.Fatal(err)
 		}
+		defer conn.Close()
+		conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		_, err = conn.Read(make([]byte, 1))
+		var ne net.Error
+		return errors.As(err, &ne) && ne.Timeout()
+	}
 
-		// A rate-limited connection is accepted by the kernel and then closed
-		// by the server, so only a received response counts as success.
+	t.Run("UnknownIPIsLimited", func(t *testing.T) {
+		n := 0
+		for range 10 {
+			if accepted() {
+				n++
+			}
+		}
+		if n != rateLimiterConfig.MaxConnectionsPerWindow {
+			t.Errorf("%d of 10 connections accepted; expected %d", n, rateLimiterConfig.MaxConnectionsPerWindow)
+		}
+	})
+
+	// The previous subtest got 127.0.0.1 blocked, so start a fresh server.
+	t.Run("ValidTrafficLiftsLimit", func(t *testing.T) {
+		srv.Shutdown(context.Background())
+		listener.Close()
+
+		srv = server.New(storage, &server.Config{
+			MaxConnections: 10,
+			RateLimiter:    rateLimiterConfig,
+			Connection:     testConnectionConfig(),
+		})
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		serverAddr = listener.Addr().String()
+		go srv.Serve(listener)
+
+		conn, err := net.Dial("tcp", serverAddr)
+		if err != nil {
+			t.Fatal(err)
+		}
 		conn.SetDeadline(time.Now().Add(2 * time.Second))
-		_, err = conn.Write(packet)
-		if err == nil {
-			_, err = conn.Read(make([]byte, 1024))
+		conn.Write(buildTestEGTSPacket())
+		if _, err := conn.Read(make([]byte, 1024)); err != nil {
+			t.Fatalf("no response to a valid packet: %v", err)
 		}
 		conn.Close()
 
-		if err == nil {
-			successCount++
+		for i := range 10 {
+			if !accepted() {
+				t.Fatalf("connection %d from a trusted IP was rejected", i)
+			}
 		}
-
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	t.Logf("Rate limiter test: %d/%d connections succeeded", successCount, 10)
-
-	// limit is 5 per window; the rest should be rate limited
-	if successCount > 6 {
-		t.Errorf("Rate limiter too permissive: %d connections succeeded (expected ~5)", successCount)
-	}
-
-	if successCount < 3 {
-		t.Errorf("Rate limiter too strict: only %d connections succeeded", successCount)
-	}
-
-	stats := srv.Stats()
-	metrics := srv.GetMetrics()
-
-	t.Logf("Rejected: %d", stats.TotalRejected.Load())
-	t.Logf("Rate limiter blocked: %v", metrics["ratelimit_total_blocked"])
-
-	if stats.TotalRejected.Load() == 0 {
-		t.Error("Expected some rejected connections due to rate limiting")
-	}
+	})
 }
 
 // TestGracefulShutdownIntegration tests graceful shutdown with active connections

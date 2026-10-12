@@ -113,17 +113,20 @@ func ParsePacket(data []byte) (*Packet, error) {
 			ErrHeaderCRC, utils.CRC8(headerWithoutCRC), header.HeaderCheckSum)
 	}
 
-	frameStart := int(header.HeaderLength)
-	frameEnd := frameStart + int(header.FrameDataLength)
-	if len(data) < frameEnd+2 {
-		return nil, fmt.Errorf("packet truncated: got %d bytes, expected %d", len(data), frameEnd+2)
+	size := PacketSize(header.HeaderLength, header.FrameDataLength)
+	if len(data) < size {
+		return nil, fmt.Errorf("packet truncated: got %d bytes, expected %d", len(data), size)
 	}
 
+	frameStart := int(header.HeaderLength)
+	frameEnd := frameStart + int(header.FrameDataLength)
 	frameData := data[frameStart:frameEnd]
-	receivedCRC16 := binary.LittleEndian.Uint16(data[frameEnd:])
-	if !utils.ValidateCRC16(frameData, receivedCRC16) {
-		return nil, fmt.Errorf("%w: expected 0x%04X, got 0x%04X",
-			ErrBodyCRC, utils.CRC16(frameData), receivedCRC16)
+	if len(frameData) > 0 {
+		receivedCRC16 := binary.LittleEndian.Uint16(data[frameEnd:])
+		if !utils.ValidateCRC16(frameData, receivedCRC16) {
+			return nil, fmt.Errorf("%w: expected 0x%04X, got 0x%04X",
+				ErrBodyCRC, utils.CRC16(frameData), receivedCRC16)
+		}
 	}
 
 	packet := &Packet{Header: header, Raw: data}
@@ -143,6 +146,16 @@ func ParsePacket(data []byte) (*Packet, error) {
 	}
 
 	return packet, nil
+}
+
+// PacketSize returns the full packet length. SFRCS (the frame data CRC16) is
+// present only when there is frame data, so an empty packet is just the header.
+func PacketSize(headerLength uint8, frameDataLength uint16) int {
+	size := int(headerLength) + int(frameDataLength)
+	if frameDataLength > 0 {
+		size += 2
+	}
+	return size
 }
 
 func parseHeader(data []byte) (*PacketHeader, error) {

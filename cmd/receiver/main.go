@@ -51,10 +51,24 @@ func main() {
 	connConfig.QueueCharger = cfg.Queue.ChargerName
 	connConfig.QueueFasttrack = cfg.Queue.FasttrackName
 
-	srv := server.New(storage, &server.Config{
+	srvConfig := &server.Config{
 		MaxConnections: cfg.Server.MaxConnections,
 		Connection:     connConfig,
-	})
+	}
+	if rl := cfg.RateLimit; rl.Enabled {
+		srvConfig.RateLimiter = &server.RateLimiterConfig{
+			MaxConnectionsPerWindow: rl.MaxPerWindow,
+			WindowDuration:          rl.Window,
+			BlockDuration:           rl.BlockDuration,
+			WhitelistedIPs:          rl.Whitelist,
+			CleanupInterval:         time.Minute,
+		}
+		log.Printf("Rate limit: %d connections per %v per IP, first block %v, whitelist %v",
+			rl.MaxPerWindow, rl.Window, rl.BlockDuration, rl.Whitelist)
+	} else {
+		log.Println("Rate limit disabled")
+	}
+	srv := server.New(storage, srvConfig)
 
 	listener, err := net.Listen("tcp", cfg.Server.GetServerAddr())
 	if err != nil {

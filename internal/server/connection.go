@@ -26,6 +26,11 @@ type ConnectionHandler struct {
 	config     *ConnectionConfig
 	remoteAddr string
 
+	// OnValidPacket, if set, is called after a packet passes CRC checks, at
+	// most once per validPacketInterval.
+	OnValidPacket   func()
+	lastValidReport time.Time
+
 	// Identity reported by the tracker; persists across packets.
 	imei string
 	imsi string
@@ -104,7 +109,7 @@ func (h *ConnectionHandler) readPacket() ([]byte, error) {
 		if errors.Is(err, io.EOF) {
 			return nil, errDisconnected
 		}
-		return nil, fmt.Errorf("read header: %w", err)
+		return nil, h.readError("header", err)
 	}
 
 	if header[0] != egts.ProtocolVersion {
@@ -121,16 +126,31 @@ func (h *ConnectionHandler) readPacket() ([]byte, error) {
 		return nil, h.protocolError("PACKET_TOO_LARGE", fmt.Sprintf("frame data length %d exceeds %d", fdl, h.config.MaxPacketSize))
 	}
 
-	packet := make([]byte, hl+fdl+2)
+	packet := make([]byte, egts.PacketSize(uint8(hl), uint16(fdl)))
 	copy(packet, header)
 	if _, err := io.ReadFull(h.reader, packet[egts.MinHeaderLength:]); err != nil {
-		return nil, fmt.Errorf("read packet body: %w", err)
+		return nil, h.readError("packet body", err)
 	}
 	return packet, nil
 }
 
+// readError reports a peer that disconnected mid-packet as a protocol error,
+// so that scanners sending short garbage count against the rate limiter.
+func (h *ConnectionHandler) readError(what string, err error) error {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return h.protocolError("TRUNCATED_PACKET", "connection closed in the middle of the "+what)
+	}
+	return fmt.Errorf("read %s: %w", what, err)
+}
+
+const validPacketInterval = time.Minute
+
 func (h *ConnectionHandler) handlePacket(raw []byte) error {
 	packet, err := egts.ParsePacket(raw)
+	if err == nil && h.OnValidPacket != nil && time.Since(h.lastValidReport) > validPacketInterval {
+		h.lastValidReport = time.Now()
+		h.OnValidPacket()
+	}
 	if err != nil {
 		if errors.Is(err, egts.ErrHeaderCRC) || errors.Is(err, egts.ErrBodyCRC) {
 			if h.config.StrictCRC {

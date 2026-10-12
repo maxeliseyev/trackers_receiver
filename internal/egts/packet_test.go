@@ -71,10 +71,8 @@ func TestParsePacketWithEmptyRecords(t *testing.T) {
 
 	headerCRC := utils.CRC8(headerWithoutCRC)
 
+	// With FDL = 0 there is no frame data and no SFRCS.
 	packetData := append(headerWithoutCRC, headerCRC)
-
-	// CRC16 of an empty body is 0xFFFF
-	packetData = append(packetData, 0xFF, 0xFF)
 
 	packet, err := ParsePacket(packetData)
 	if err != nil {

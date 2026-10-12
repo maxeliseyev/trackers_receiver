@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/maintnotifications"
 
 	"trackers-receiver/internal/serialization"
 	"trackers-receiver/internal/storage"
@@ -87,6 +88,9 @@ func NewRedisStorage(config *Config) (*RedisStorage, error) {
 		DialTimeout:  config.DialTimeout,
 		ReadTimeout:  config.ReadTimeout,
 		WriteTimeout: config.WriteTimeout,
+		// Maintenance notifications are a Redis Enterprise feature; on plain
+		// Redis the handshake only logs an error.
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

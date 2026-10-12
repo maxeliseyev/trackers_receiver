@@ -15,9 +15,14 @@ converts navigation records to MessagePack documents and pushes them to Redis li
 - Each document is `LPUSH`ed to both the charger and fasttrack queues, which are trimmed to
   their configured maximum length. The format matches the previous Python receiver.
 
+- New connections are rate limited per source IP, and an IP that keeps sending malformed
+  data is blocked, with the block doubling on each repeat (up to 24 h). An IP that sent a
+  valid packet within the last hour is exempt: carrier NAT addresses and retranslators carry
+  many trackers, sometimes next to a device sending garbage. If the receiver sits behind a
+  load balancer, add its address to `RATE_LIMIT_WHITELIST`.
+
 Not implemented yet: routed headers (`RTE=1`), encryption and compression, structured
-logging, a metrics endpoint. A per-IP rate limiter exists in `internal/server` but is not
-enabled in `cmd/receiver`.
+logging, a metrics endpoint.
 
 ## Configuration
 
@@ -39,6 +44,11 @@ Environment variables (a `.env` file is loaded if present, see `.env.example`):
 | `QUEUE_CHARGER_MAX_LEN` | `2999999` | |
 | `QUEUE_FASTTRACK_NAME` | `fasttrack` | |
 | `QUEUE_FASTTRACK_MAX_LEN` | `2999999` | |
+| `RATE_LIMIT_ENABLED` | `true` | |
+| `RATE_LIMIT_MAX_PER_WINDOW` | `300` | new connections per unknown IP per window |
+| `RATE_LIMIT_WINDOW` | `10` | seconds |
+| `RATE_LIMIT_BLOCK_DURATION` | `60` | seconds, first block |
+| `RATE_LIMIT_WHITELIST` | `127.0.0.1,::1` | comma-separated IPs that are never limited |
 
 ## Running
 

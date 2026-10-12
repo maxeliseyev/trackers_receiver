@@ -11,11 +11,17 @@ const (
 	maxProtocolErrors   = 5
 	protocolErrorWindow = 60 * time.Second
 	maxBlockDuration    = 24 * time.Hour
+
+	// trustedFor is how long an IP stays exempt from limits after it sent a
+	// valid packet. Carrier NAT addresses and retranslators mix many trackers,
+	// sometimes alongside a device sending garbage, and must not be blocked.
+	trustedFor = time.Hour
 )
 
 // RateLimiter limits connections per IP over a sliding window and blocks
 // offenders, doubling the block on each repeat. An IP is also blocked after
 // more than maxProtocolErrors protocol errors within protocolErrorWindow.
+// IPs that recently sent a valid packet (see RecordValidTraffic) are exempt.
 type RateLimiter struct {
 	maxConnPerWindow int
 	windowDuration   time.Duration
@@ -45,6 +51,12 @@ type clientState struct {
 
 	protocolErrors int
 	firstError     time.Time
+
+	lastValid time.Time
+}
+
+func (c *clientState) trusted(now time.Time) bool {
+	return !c.lastValid.IsZero() && now.Sub(c.lastValid) < trustedFor
 }
 
 type RateLimiterConfig struct {
@@ -96,6 +108,11 @@ func (rl *RateLimiter) Allow(conn net.Conn) bool {
 	now := time.Now()
 	state := rl.getState(ip)
 
+	if state.trusted(now) {
+		rl.totalAllowed.Add(1)
+		return true
+	}
+
 	if state.blocked {
 		if now.Before(state.blockedUntil) {
 			rl.totalBlocked.Add(1)
@@ -134,8 +151,27 @@ func (rl *RateLimiter) RecordProtocolError(conn net.Conn) {
 	}
 	state.protocolErrors++
 
-	if state.protocolErrors > maxProtocolErrors && !state.blocked {
+	if state.protocolErrors > maxProtocolErrors && !state.blocked && !state.trusted(now) {
 		rl.block(state, now)
+	}
+}
+
+// RecordValidTraffic marks the IP as sending real EGTS data, exempting it from
+// limits for trustedFor and lifting any block.
+func (rl *RateLimiter) RecordValidTraffic(conn net.Conn) {
+	ip := extractIP(conn.RemoteAddr())
+	if rl.whitelist[ip] {
+		return
+	}
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	state := rl.getState(ip)
+	state.lastValid = time.Now()
+	if state.blocked {
+		rl.unblock(state)
+		state.blockCount = 0
 	}
 }
 
@@ -192,7 +228,8 @@ func (rl *RateLimiter) cleanupLoop() {
 	}
 }
 
-// cleanup forgets IPs that are not blocked and have been idle for two windows.
+// cleanup forgets IPs that are neither blocked nor trusted and have been idle
+// for two windows.
 func (rl *RateLimiter) cleanup() {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -201,7 +238,7 @@ func (rl *RateLimiter) cleanup() {
 	cutoff := now.Add(-2 * rl.windowDuration)
 
 	for ip, state := range rl.clients {
-		if state.blocked && now.Before(state.blockedUntil) {
+		if state.blocked && now.Before(state.blockedUntil) || state.trusted(now) {
 			continue
 		}
 		if len(state.connections) == 0 || state.connections[len(state.connections)-1].Before(cutoff) {
