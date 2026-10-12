@@ -40,19 +40,15 @@ func TestServerIntegration(t *testing.T) {
 	storage.ClearQueue(ctx, "test_charger")
 	storage.ClearQueue(ctx, "test_fasttrack")
 
-	poolConfig := &server.PoolConfig{
-		NumWorkers:        2,
-		QueueSize:         10,
-		RateLimiterConfig: nil, // Disable rate limiting for tests
-		ConnectionConfig:  testConnectionConfig(),
-	}
-
-	pool := server.NewWorkerPool(storage, poolConfig)
-	pool.Start()
+	srv := server.New(storage, &server.Config{
+		MaxConnections: 100,
+		RateLimiter:    nil,
+		Connection:     testConnectionConfig(),
+	})
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		pool.Shutdown(shutdownCtx)
+		srv.Shutdown(shutdownCtx)
 	}()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0") // Random port
@@ -63,16 +59,7 @@ func TestServerIntegration(t *testing.T) {
 
 	serverAddr := listener.Addr().String()
 
-	// Accept connections in background
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return // Listener closed
-			}
-			pool.Submit(conn)
-		}
-	}()
+	go srv.Serve(listener)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -212,8 +199,8 @@ func testMultipleConnections(t *testing.T, serverAddr string, storage *redis.Red
 
 	t.Logf("Successful connections: %d/%d", success, numConnections)
 
-	if success < numConnections/2 {
-		t.Errorf("Too many failed connections: %d/%d", numConnections-success, numConnections)
+	if success != numConnections {
+		t.Errorf("%d of %d connections failed", numConnections-success, numConnections)
 	}
 
 	time.Sleep(500 * time.Millisecond)

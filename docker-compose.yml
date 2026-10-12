@@ -11,6 +11,10 @@ services:
       - "36000:36000"
     env_file:
       - ./.env
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
     deploy:
       resources:
         limits:

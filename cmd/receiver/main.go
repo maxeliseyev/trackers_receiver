@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log"
 	"net"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -53,12 +51,10 @@ func main() {
 	connConfig.QueueCharger = cfg.Queue.ChargerName
 	connConfig.QueueFasttrack = cfg.Queue.FasttrackName
 
-	pool := server.NewWorkerPool(storage, &server.PoolConfig{
-		NumWorkers:       max(4, min(32, runtime.NumCPU()*2)),
-		QueueSize:        cfg.Server.MaxConnections,
-		ConnectionConfig: connConfig,
+	srv := server.New(storage, &server.Config{
+		MaxConnections: cfg.Server.MaxConnections,
+		Connection:     connConfig,
 	})
-	pool.Start()
 
 	listener, err := net.Listen("tcp", cfg.Server.GetServerAddr())
 	if err != nil {
@@ -68,7 +64,7 @@ func main() {
 	log.Printf("Listening on %s, Redis %s, queues %s/%s",
 		listener.Addr(), cfg.Redis.GetRedisAddr(), cfg.Queue.ChargerName, cfg.Queue.FasttrackName)
 
-	go acceptLoop(listener, pool)
+	go srv.Serve(listener)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -79,23 +75,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if err := pool.Shutdown(ctx); err != nil {
-		log.Printf("Pool shutdown: %v", err)
-	}
-}
-
-func acceptLoop(listener net.Listener, pool *server.WorkerPool) {
-	for {
-		conn, err := listener.Accept()
-		if errors.Is(err, net.ErrClosed) {
-			return
-		}
-		if err != nil {
-			log.Printf("[ERROR] accept: %v", err)
-			continue
-		}
-		if err := pool.Submit(conn); err != nil {
-			log.Printf("[WARN] reject %s: %v", conn.RemoteAddr(), err)
-		}
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("Shutdown: %v", err)
 	}
 }

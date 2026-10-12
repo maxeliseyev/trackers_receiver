@@ -17,7 +17,7 @@ type ServerConfig struct {
 	Port         int
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
-	// MaxConnections caps how many accepted connections may wait for a worker.
+	// MaxConnections caps concurrently served tracker connections.
 	MaxConnections int
 }
 

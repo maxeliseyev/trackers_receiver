@@ -11,8 +11,9 @@ import (
 	"trackers-receiver/internal/storage/redis"
 )
 
-// TestWorkerPoolUnderLoad tests worker pool behavior under high load
-func TestWorkerPoolUnderLoad(t *testing.T) {
+// TestManyConcurrentConnections keeps every connection open until all of them
+// have been answered, so it fails if the server can only serve a few at once.
+func TestManyConcurrentConnections(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -36,19 +37,15 @@ func TestWorkerPoolUnderLoad(t *testing.T) {
 	ctx := context.Background()
 	storage.ClearQueue(ctx, "test_charger")
 
-	poolConfig := &server.PoolConfig{
-		NumWorkers:        4,
-		QueueSize:         100,
-		RateLimiterConfig: nil,
-		ConnectionConfig:  testConnectionConfig(),
-	}
-
-	pool := server.NewWorkerPool(storage, poolConfig)
-	pool.Start()
+	srv := server.New(storage, &server.Config{
+		MaxConnections: 1000,
+		RateLimiter:    nil,
+		Connection:     testConnectionConfig(),
+	})
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		pool.Shutdown(shutdownCtx)
+		srv.Shutdown(shutdownCtx)
 	}()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -59,93 +56,78 @@ func TestWorkerPoolUnderLoad(t *testing.T) {
 
 	serverAddr := listener.Addr().String()
 
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			pool.Submit(conn)
-		}
-	}()
+	go srv.Serve(listener)
 
 	time.Sleep(100 * time.Millisecond)
 
-	numConnections := 200
-	var wg sync.WaitGroup
-	successCount := 0
-	var mu sync.Mutex
-
+	const numConnections = 500
 	packet := buildTestEGTSPacket()
 
-	startTime := time.Now()
+	var answered, release sync.WaitGroup
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successCount := 0
+	answered.Add(numConnections)
+	release.Add(1)
 
-	for i := 0; i < numConnections; i++ {
+	startTime := time.Now()
+	for i := range numConnections {
 		wg.Add(1)
-		go func(id int) {
+		go func() {
 			defer wg.Done()
+			ok := false
+			defer func() {
+				if !ok {
+					answered.Done()
+				}
+			}()
 
 			conn, err := net.Dial("tcp", serverAddr)
 			if err != nil {
-				t.Logf("Connection %d failed to dial: %v", id, err)
+				t.Logf("connection %d: dial: %v", i, err)
 				return
 			}
 			defer conn.Close()
 
 			conn.SetDeadline(time.Now().Add(10 * time.Second))
-
-			_, err = conn.Write(packet)
-			if err != nil {
+			if _, err := conn.Write(packet); err != nil {
+				return
+			}
+			if _, err := conn.Read(make([]byte, 1024)); err != nil {
+				t.Logf("connection %d: read: %v", i, err)
 				return
 			}
 
-			response := make([]byte, 1024)
-			_, err = conn.Read(response)
-			if err == nil {
-				mu.Lock()
-				successCount++
-				mu.Unlock()
-			}
-		}(i)
-
-		// Small delay to avoid overwhelming the system
-		if i%50 == 0 {
-			time.Sleep(10 * time.Millisecond)
-		}
+			mu.Lock()
+			successCount++
+			mu.Unlock()
+			ok = true
+			answered.Done()
+			release.Wait()
+		}()
 	}
 
-	wg.Wait()
+	answered.Wait()
 	duration := time.Since(startTime)
+	active := srv.ActiveConnections()
+	release.Done()
+	wg.Wait()
 
-	t.Logf("Load test completed:")
-	t.Logf("  Total connections: %d", numConnections)
-	t.Logf("  Successful: %d", successCount)
-	t.Logf("  Duration: %v", duration)
-	t.Logf("  Throughput: %.2f conn/sec", float64(numConnections)/duration.Seconds())
+	t.Logf("%d/%d answered in %v, %d active at peak", successCount, numConnections, duration, active)
 
-	stats := pool.Stats()
-	t.Logf("Worker Pool Stats:")
-	t.Logf("  Total Accepted: %d", stats.TotalAccepted.Load())
-	t.Logf("  Total Rejected: %d", stats.TotalRejected.Load())
-	t.Logf("  Total Processed: %d", stats.TotalProcessed.Load())
-	t.Logf("  Total Failed: %d", stats.TotalFailed.Load())
-
-	// We expect some rejections due to limited queue size
-	if stats.TotalAccepted.Load() == 0 {
-		t.Error("Expected some accepted connections")
+	if successCount != numConnections {
+		t.Errorf("only %d of %d connections were answered", successCount, numConnections)
 	}
-
-	time.Sleep(2 * time.Second)
+	if active != numConnections {
+		t.Errorf("ActiveConnections = %d while all clients were connected; expected %d", active, numConnections)
+	}
 
 	queueLen, err := storage.GetQueueLength(ctx, "test_charger")
 	if err != nil {
 		t.Fatalf("Failed to get queue length: %v", err)
 	}
-
-	t.Logf("Redis queue length: %d", queueLen)
-
-	if queueLen == 0 {
-		t.Error("Expected some data in Redis queue")
+	if queueLen != numConnections {
+		t.Errorf("Redis queue length = %d; expected %d", queueLen, numConnections)
 	}
 }
 
@@ -179,19 +161,15 @@ func TestRateLimiterIntegration(t *testing.T) {
 		CleanupInterval:         1 * time.Minute,
 	}
 
-	poolConfig := &server.PoolConfig{
-		NumWorkers:        2,
-		QueueSize:         10,
-		RateLimiterConfig: rateLimiterConfig,
-		ConnectionConfig:  testConnectionConfig(),
-	}
-
-	pool := server.NewWorkerPool(storage, poolConfig)
-	pool.Start()
+	srv := server.New(storage, &server.Config{
+		MaxConnections: 10,
+		RateLimiter:    rateLimiterConfig,
+		Connection:     testConnectionConfig(),
+	})
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		pool.Shutdown(shutdownCtx)
+		srv.Shutdown(shutdownCtx)
 	}()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -202,15 +180,7 @@ func TestRateLimiterIntegration(t *testing.T) {
 
 	serverAddr := listener.Addr().String()
 
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			pool.Submit(conn)
-		}
-	}()
+	go srv.Serve(listener)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -226,7 +196,7 @@ func TestRateLimiterIntegration(t *testing.T) {
 		}
 
 		// A rate-limited connection is accepted by the kernel and then closed
-		// by the pool, so only a received response counts as success.
+		// by the server, so only a received response counts as success.
 		conn.SetDeadline(time.Now().Add(2 * time.Second))
 		_, err = conn.Write(packet)
 		if err == nil {
@@ -252,10 +222,10 @@ func TestRateLimiterIntegration(t *testing.T) {
 		t.Errorf("Rate limiter too strict: only %d connections succeeded", successCount)
 	}
 
-	stats := pool.Stats()
-	metrics := pool.GetMetrics()
+	stats := srv.Stats()
+	metrics := srv.GetMetrics()
 
-	t.Logf("Pool rejected: %d", stats.TotalRejected.Load())
+	t.Logf("Rejected: %d", stats.TotalRejected.Load())
 	t.Logf("Rate limiter blocked: %v", metrics["ratelimit_total_blocked"])
 
 	if stats.TotalRejected.Load() == 0 {
@@ -285,15 +255,11 @@ func TestGracefulShutdownIntegration(t *testing.T) {
 	}
 	defer storage.Close()
 
-	poolConfig := &server.PoolConfig{
-		NumWorkers:        2,
-		QueueSize:         100,
-		RateLimiterConfig: nil,
-		ConnectionConfig:  testConnectionConfig(),
-	}
-
-	pool := server.NewWorkerPool(storage, poolConfig)
-	pool.Start()
+	srv := server.New(storage, &server.Config{
+		MaxConnections: 100,
+		RateLimiter:    nil,
+		Connection:     testConnectionConfig(),
+	})
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -302,58 +268,38 @@ func TestGracefulShutdownIntegration(t *testing.T) {
 
 	serverAddr := listener.Addr().String()
 
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			pool.Submit(conn)
-		}
-	}()
+	go srv.Serve(listener)
 
 	time.Sleep(100 * time.Millisecond)
 
-	var wg sync.WaitGroup
-	packet := buildTestEGTSPacket()
-
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			conn, err := net.Dial("tcp", serverAddr)
-			if err != nil {
-				return
-			}
-			defer conn.Close()
-			conn.Write(packet)
-			time.Sleep(500 * time.Millisecond)
-		}()
+	clients := make([]net.Conn, 0, 10)
+	for range 10 {
+		conn, err := net.Dial("tcp", serverAddr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		clients = append(clients, conn)
+	}
+	deadline := time.Now().Add(time.Second)
+	for srv.ActiveConnections() < len(clients) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
 	}
 
-	time.Sleep(200 * time.Millisecond)
-
-	shutdownStart := time.Now()
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = pool.Shutdown(shutdownCtx)
-	shutdownDuration := time.Since(shutdownStart)
-
-	t.Logf("Shutdown completed in %v", shutdownDuration)
-
-	if err != nil {
-		t.Errorf("Shutdown failed: %v", err)
+	start := time.Now()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
 	}
-
+	t.Logf("Shutdown with %d open connections took %v", len(clients), time.Since(start))
 	listener.Close()
 
-	wg.Wait()
-
-	stats := pool.Stats()
-	t.Logf("Final stats:")
-	t.Logf("  Accepted: %d", stats.TotalAccepted.Load())
-	t.Logf("  Processed: %d", stats.TotalProcessed.Load())
-	t.Logf("  Failed: %d", stats.TotalFailed.Load())
+	for i, conn := range clients {
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		if _, err := conn.Read(make([]byte, 1)); err == nil {
+			t.Errorf("client %d: connection still open after Shutdown", i)
+		}
+	}
 }

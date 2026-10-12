@@ -5,8 +5,8 @@ converts navigation records to MessagePack documents and pushes them to Redis li
 
 ## How it works
 
-- Each accepted connection is queued and served by a fixed pool of workers
-  (`2 × CPU`, between 4 and 32). A worker owns its connection until the tracker disconnects.
+- Each tracker connection is served by its own goroutine for as long as the tracker stays
+  connected. Connections beyond `SERVER_MAX_CONNECTIONS` are closed right after accept.
 - Every packet is checked against its header CRC8 and body CRC16 and acknowledged with
   `EGTS_PT_RESPONSE`.
 - Records containing `SR_POS_DATA` become documents; `SR_EXT_POS_DATA`, `SR_STATE_DATA`,
@@ -28,7 +28,7 @@ Environment variables (a `.env` file is loaded if present, see `.env.example`):
 | `SERVER_PORT` | `36000` | |
 | `SERVER_READ_TIMEOUT` | `600` | seconds to wait for the next packet |
 | `SERVER_WRITE_TIMEOUT` | `30` | seconds |
-| `SERVER_MAX_CONNECTIONS` | `10000` | connections that may wait for a free worker |
+| `SERVER_MAX_CONNECTIONS` | `10000` | concurrent tracker connections; needs a matching `nofile` limit |
 | `REDIS_HOST` | `localhost` | |
 | `REDIS_PORT` | `6379` | |
 | `REDIS_PASSWORD` | | |

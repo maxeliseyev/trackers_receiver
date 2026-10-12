@@ -22,7 +22,6 @@ import (
 type ConnectionHandler struct {
 	conn       net.Conn
 	reader     *bufio.Reader
-	writer     *bufio.Writer
 	storage    storage.QueueStorage
 	config     *ConnectionConfig
 	remoteAddr string
@@ -41,7 +40,9 @@ type ConnectionConfig struct {
 	// MaxPacketSize limits FDL to bound per-connection memory.
 	MaxPacketSize int
 	// StrictCRC drops the connection on a CRC mismatch instead of skipping the packet.
-	StrictCRC      bool
+	StrictCRC bool
+	// BufferSize is the per-connection read buffer; it is multiplied by the
+	// number of connections, so keep it small.
 	BufferSize     int
 	QueueCharger   string
 	QueueFasttrack string
@@ -53,7 +54,7 @@ func DefaultConnectionConfig() *ConnectionConfig {
 		WriteTimeout:   30 * time.Second,
 		MaxPacketSize:  65536,
 		StrictCRC:      false,
-		BufferSize:     8192,
+		BufferSize:     2048,
 		QueueCharger:   "charger",
 		QueueFasttrack: "fasttrack",
 	}
@@ -63,7 +64,6 @@ func NewConnectionHandler(conn net.Conn, stor storage.QueueStorage, config *Conn
 	return &ConnectionHandler{
 		conn:       conn,
 		reader:     bufio.NewReaderSize(conn, config.BufferSize),
-		writer:     bufio.NewWriterSize(conn, config.BufferSize),
 		storage:    stor,
 		config:     config,
 		remoteAddr: conn.RemoteAddr().String(),
@@ -340,10 +340,7 @@ func (h *ConnectionHandler) write(data []byte) error {
 	if err := h.conn.SetWriteDeadline(time.Now().Add(h.config.WriteTimeout)); err != nil {
 		return &ConnectionError{Code: "WRITE_FAILED", Message: err.Error()}
 	}
-	if _, err := h.writer.Write(data); err != nil {
-		return &ConnectionError{Code: "WRITE_FAILED", Message: err.Error()}
-	}
-	if err := h.writer.Flush(); err != nil {
+	if _, err := h.conn.Write(data); err != nil {
 		return &ConnectionError{Code: "WRITE_FAILED", Message: err.Error()}
 	}
 	return nil
