@@ -59,3 +59,6 @@ config.local.json
 cpu.pprof
 mem.pprof
 trace.out
+
+# Local debugging scripts
+/test_sender.py
