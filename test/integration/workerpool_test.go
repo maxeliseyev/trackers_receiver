@@ -40,7 +40,7 @@ func TestWorkerPoolUnderLoad(t *testing.T) {
 		NumWorkers:        4,
 		QueueSize:         100,
 		RateLimiterConfig: nil,
-		ConnectionConfig:  server.DefaultConnectionConfig(),
+		ConnectionConfig:  testConnectionConfig(),
 	}
 
 	pool := server.NewWorkerPool(storage, poolConfig)
@@ -183,7 +183,7 @@ func TestRateLimiterIntegration(t *testing.T) {
 		NumWorkers:        2,
 		QueueSize:         10,
 		RateLimiterConfig: rateLimiterConfig,
-		ConnectionConfig:  server.DefaultConnectionConfig(),
+		ConnectionConfig:  testConnectionConfig(),
 	}
 
 	pool := server.NewWorkerPool(storage, poolConfig)
@@ -225,8 +225,13 @@ func TestRateLimiterIntegration(t *testing.T) {
 			continue
 		}
 
+		// A rate-limited connection is accepted by the kernel and then closed
+		// by the pool, so only a received response counts as success.
 		conn.SetDeadline(time.Now().Add(2 * time.Second))
 		_, err = conn.Write(packet)
+		if err == nil {
+			_, err = conn.Read(make([]byte, 1024))
+		}
 		conn.Close()
 
 		if err == nil {
@@ -284,7 +289,7 @@ func TestGracefulShutdownIntegration(t *testing.T) {
 		NumWorkers:        2,
 		QueueSize:         100,
 		RateLimiterConfig: nil,
-		ConnectionConfig:  server.DefaultConnectionConfig(),
+		ConnectionConfig:  testConnectionConfig(),
 	}
 
 	pool := server.NewWorkerPool(storage, poolConfig)

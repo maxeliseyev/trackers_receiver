@@ -69,7 +69,12 @@ type PacketHeader struct {
 }
 
 type Packet struct {
-	Header  *PacketHeader
+	Header *PacketHeader
+
+	// Set only for EGTS_PT_RESPONSE, whose frame data starts with RPID and PR.
+	ResponsePacketID uint16
+	ProcessingResult uint8
+
 	Records []*Record
 	Raw     []byte
 }
@@ -121,12 +126,23 @@ func ParsePacket(data []byte) (*Packet, error) {
 			ErrBodyCRC, utils.CRC16(frameData), receivedCRC16)
 	}
 
-	records, err := parseRecords(frameData)
+	packet := &Packet{Header: header, Raw: data}
+
+	if header.PacketType == PtResponse {
+		if len(frameData) < 3 {
+			return nil, fmt.Errorf("response frame truncated: %d bytes", len(frameData))
+		}
+		packet.ResponsePacketID = binary.LittleEndian.Uint16(frameData)
+		packet.ProcessingResult = frameData[2]
+		frameData = frameData[3:]
+	}
+
+	packet.Records, err = parseRecords(frameData)
 	if err != nil {
 		return nil, fmt.Errorf("parse records: %w", err)
 	}
 
-	return &Packet{Header: header, Records: records, Raw: data}, nil
+	return packet, nil
 }
 
 func parseHeader(data []byte) (*PacketHeader, error) {
@@ -283,13 +299,13 @@ type PositionData struct {
 	Source         uint8
 
 	// FLG bits.
-	Valid          bool  // VLD
-	Fix            uint8 // FIX
-	LatitudeValid  bool  // LAHS
-	LongitudeValid bool  // LOHS
-	AltitudeValid  bool  // ALTE
-	Moving         bool  // MV
-	ExtraDOP       uint8 // VLD<<7 | LOHS<<6 | LAHS<<5, as the Python receiver encoded it
+	Valid         bool  // VLD
+	Fix           uint8 // FIX
+	SouthLatitude bool  // LAHS
+	WestLongitude bool  // LOHS
+	AltitudeValid bool  // ALTE
+	Moving        bool  // MV
+	ExtraDOP      uint8 // VLD<<7 | LOHS<<6 | LAHS<<5, as the Python receiver encoded it
 }
 
 // GetPositionData decodes EGTS_SR_POS_DATA.
@@ -313,8 +329,8 @@ func GetPositionData(sr *SubRecord) (*PositionData, error) {
 		Latitude:       float64(lat) * 90.0 / 0xFFFFFFFF,
 		Longitude:      float64(lon) * 180.0 / 0xFFFFFFFF,
 		AltitudeValid:  flags&0x80 != 0,
-		LongitudeValid: flags&0x40 != 0,
-		LatitudeValid:  flags&0x20 != 0,
+		WestLongitude:  flags&0x40 != 0,
+		SouthLatitude:  flags&0x20 != 0,
 		Moving:         flags&0x10 != 0,
 		Fix:            flags >> 1 & 0x01,
 		Valid:          flags&0x01 != 0,
@@ -322,6 +338,14 @@ func GetPositionData(sr *SubRecord) (*PositionData, error) {
 		Source:         d[20],
 	}
 	pos.ExtraDOP = flags&0x01<<7 | flags&0x40 | flags&0x20
+
+	// LAT and LONG are unsigned magnitudes; the hemisphere comes from FLG.
+	if pos.SouthLatitude {
+		pos.Latitude = -pos.Latitude
+	}
+	if pos.WestLongitude {
+		pos.Longitude = -pos.Longitude
+	}
 
 	// SPD: DIRH(15) ALTS(14) speed in 0.1 km/h (13-0). DIRH is the 9th bit
 	// of the course; DIR holds the lower 8.

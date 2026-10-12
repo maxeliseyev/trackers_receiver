@@ -231,9 +231,8 @@ func TestGetPositionDataBasic(t *testing.T) {
 	posData[10] = byte(lon >> 16)
 	posData[11] = byte(lon >> 24)
 
-	// Flags (1 byte) - valid=1, fix=1 (2D), lat/lon valid
-	// VLD=1 (bit 0), FIX=1 (bit 1), LAHS=1 (bit 5), LOHS=1 (bit 6)
-	posData[12] = 0x63 // 0b01100011
+	// Flags: VLD=1 (bit 0), FIX=1 (bit 1), northern/eastern hemisphere
+	posData[12] = 0x03
 
 	// SPD: speed in 0.1 km/h in bits 0-13, DIRH and ALTS clear
 	spd := uint16(500) // 50 km/h
@@ -286,14 +285,6 @@ func TestGetPositionDataBasic(t *testing.T) {
 
 	if pos.Fix != 1 {
 		t.Errorf("Fix = %d; expected 1", pos.Fix)
-	}
-
-	if !pos.LatitudeValid {
-		t.Error("LatitudeValid must be true")
-	}
-
-	if !pos.LongitudeValid {
-		t.Error("LongitudeValid must be true")
 	}
 
 	if pos.Speed != 50 {
@@ -549,5 +540,31 @@ func TestGetPositionDataSpeedBits(t *testing.T) {
 	}
 	if pos.Altitude == nil || *pos.Altitude != -150 {
 		t.Errorf("Altitude = %v; expected -150", pos.Altitude)
+	}
+}
+
+func TestGetPositionDataHemisphere(t *testing.T) {
+	data := make([]byte, 21)
+	lat := uint32(0x7FFFFFFF) // ~45 degrees
+	lon := uint32(0x7FFFFFFF) // ~90 degrees
+	for i := range 4 {
+		data[4+i] = byte(lat >> (8 * i))
+		data[8+i] = byte(lon >> (8 * i))
+	}
+	data[12] = 0x60 // LOHS=1, LAHS=1
+
+	pos, err := GetPositionData(&SubRecord{Type: SrPosData, Length: 21, Data: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if pos.Latitude > -44.9 || pos.Latitude < -45.1 {
+		t.Errorf("Latitude = %.6f; expected ~-45.0", pos.Latitude)
+	}
+	if pos.Longitude > -89.9 || pos.Longitude < -90.1 {
+		t.Errorf("Longitude = %.6f; expected ~-90.0", pos.Longitude)
+	}
+	if pos.ExtraDOP != 0x60 {
+		t.Errorf("ExtraDOP = 0x%02X; expected 0x60", pos.ExtraDOP)
 	}
 }
