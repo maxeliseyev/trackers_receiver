@@ -566,3 +566,92 @@ func TestGetPositionDataHemisphere(t *testing.T) {
 		t.Errorf("ExtraDOP = 0x%02X; expected 0x60", pos.ExtraDOP)
 	}
 }
+
+// 3-byte fields are unsigned: values with the top bit set must not turn negative.
+func TestThreeByteFieldsAreUnsigned(t *testing.T) {
+	data := make([]byte, 21)
+	data[16], data[17], data[18] = 0x00, 0x00, 0x90 // ODM 0x900000 = 943718.4 km
+	pos, err := GetPositionData(&SubRecord{Type: SrPosData, Length: 21, Data: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pos.Odometer != 0x900000*100 {
+		t.Errorf("Odometer = %d; expected %d", pos.Odometer, 0x900000*100)
+	}
+
+	counter, err := GetCounterData(&SubRecord{Type: SrAbsCntrData, Length: 4, Data: []byte{1, 0xFF, 0xFF, 0xFF}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counter.CounterValue != 0xFFFFFF {
+		t.Errorf("CounterValue = %d; expected %d", counter.CounterValue, 0xFFFFFF)
+	}
+
+	analog, err := GetAbsAnalogSensorData(&SubRecord{Type: SrAbsAnSensData, Length: 4, Data: []byte{2, 0x00, 0x00, 0x80}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analog.SensorValue != 0x800000 {
+		t.Errorf("SensorValue = %d; expected %d", analog.SensorValue, 0x800000)
+	}
+}
+
+func TestGetLiquidLevelDataFlags(t *testing.T) {
+	tests := []struct {
+		name      string
+		flags     byte
+		llsd      []byte
+		sensor    uint8
+		errorFlag uint8
+		mm, l     *uint32
+	}{
+		{"uncalibrated", 0x05, []byte{100, 0, 0, 0}, 5, 0, ptr(uint32(100)), nil},
+		{"litres", 0x20 | 0x01, []byte{100, 0, 0, 0}, 1, 0, nil, ptr(uint32(1000))},
+		{"error", 0x40 | 0x02, []byte{0, 0, 0, 0}, 2, 1, ptr(uint32(0)), nil},
+		{"raw data", 0x08, []byte{0x34, 0x12}, 0, 0, ptr(uint32(0x1234)), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := append([]byte{tt.flags, 0, 0}, tt.llsd...)
+			liquid, err := GetLiquidLevelData(&SubRecord{Type: SrLiquidLevel, Length: uint16(len(data)), Data: data})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if liquid.NavDataNumber != tt.sensor || liquid.SensorErrorStatus != tt.errorFlag {
+				t.Errorf("LLSN = %d, LLSEF = %d; expected %d and %d", liquid.NavDataNumber, liquid.SensorErrorStatus, tt.sensor, tt.errorFlag)
+			}
+			if !equalPtr(liquid.LevelMM, tt.mm) || !equalPtr(liquid.LevelL, tt.l) {
+				t.Errorf("LevelMM = %v, LevelL = %v; expected %v and %v", deref(liquid.LevelMM), deref(liquid.LevelL), deref(tt.mm), deref(tt.l))
+			}
+		})
+	}
+}
+
+func TestGetExtPosData(t *testing.T) {
+	// VFE HFE PFE SFE NSFE, VDOP 1.5, HDOP 0.9, PDOP 1.75, 12 satellites, NS GLONASS|GPS
+	data := []byte{0x1F, 150, 0, 90, 0, 175, 0, 12, 0x03, 0x00}
+	ext, err := GetExtPosData(&SubRecord{Type: SrExtPosData, Length: uint16(len(data)), Data: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deref(ext.VDOP) != 150 || deref(ext.HDOP) != 90 || deref(ext.PDOP) != 175 {
+		t.Errorf("VDOP/HDOP/PDOP = %d/%d/%d; expected 150/90/175", deref(ext.VDOP), deref(ext.HDOP), deref(ext.PDOP))
+	}
+	if deref(ext.Satellites) != 12 || deref(ext.NavigationSystems) != 0x03 {
+		t.Errorf("SAT = %d, NS = %d; expected 12 and 3", deref(ext.Satellites), deref(ext.NavigationSystems))
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func deref[T any](p *T) T {
+	var zero T
+	if p == nil {
+		return zero
+	}
+	return *p
+}
+
+func equalPtr[T comparable](a, b *T) bool {
+	return a == nil && b == nil || a != nil && b != nil && *a == *b
+}

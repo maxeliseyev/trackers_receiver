@@ -36,6 +36,8 @@ type ConnectionHandler struct {
 	imsi string
 	oid  uint32
 	tid  uint32
+
+	pid uint16 // ID of the next packet sent to the tracker
 }
 
 type ConnectionConfig struct {
@@ -172,22 +174,25 @@ func (h *ConnectionHandler) handlePacket(raw []byte) error {
 	}
 }
 
-// processAppdataPacket stores the navigation records and acknowledges the packet.
-// Records that fail to parse are not confirmed.
+// processAppdataPacket stores the navigation data and confirms every record.
+// A record is confirmed even if some of its subrecords are malformed: resending
+// the same bytes would not fix them.
 func (h *ConnectionHandler) processAppdataPacket(packet *egts.Packet) error {
-	documents := make([]*models.Document, 0, len(packet.Records))
-	recordNumbers := make([]uint16, 0, len(packet.Records))
+	var documents []*models.Document
+	confirmations := make([]egts.RecordConfirmation, 0, len(packet.Records))
+	identified := false
 
 	for _, record := range packet.Records {
-		doc, err := h.processRecord(record)
-		if err != nil {
-			log.Printf("[WARN] %s: record %d: %v", h.remoteAddr, record.RecordNumber, err)
-			continue
+		if record.ObjectID != 0 {
+			h.oid = record.ObjectID
 		}
-		if doc != nil {
-			documents = append(documents, doc)
-			recordNumbers = append(recordNumbers, record.RecordNumber)
+		switch record.SourceServiceType {
+		case egts.EgtsAuthService:
+			identified = h.processAuthRecord(record) || identified
+		case egts.EgtsTeleDataService:
+			documents = append(documents, h.processTeledataRecord(record)...)
 		}
+		confirmations = append(confirmations, egts.ConfirmRecord(record, egts.ProcessingResultOK))
 	}
 
 	if len(documents) > 0 {
@@ -198,39 +203,52 @@ func (h *ConnectionHandler) processAppdataPacket(packet *egts.Packet) error {
 		}
 	}
 
-	return h.sendResponse(packet.Header.PacketID, recordNumbers)
+	if err := h.write(egts.BuildResponse(h.nextPID(), packet.Header.PacketID, egts.ProcessingResultOK, confirmations)); err != nil {
+		return err
+	}
+	if identified {
+		// Authentication is not checked, so every terminal is accepted.
+		pid := h.nextPID()
+		return h.write(egts.BuildResultCode(pid, pid, egts.ProcessingResultOK))
+	}
+	return nil
 }
 
-// processRecord turns a record into a document. It returns nil if the record
-// carries no SR_POS_DATA. Only the first SR_POS_DATA in a record is used, and
-// subrecords that precede it (other than identity) are ignored.
-func (h *ConnectionHandler) processRecord(record *egts.Record) (*models.Document, error) {
-	if record.ObjectID != 0 {
-		h.oid = record.ObjectID
+// processAuthRecord remembers the terminal's identity and reports whether the
+// record carried EGTS_SR_TERM_IDENTITY.
+func (h *ConnectionHandler) processAuthRecord(record *egts.Record) bool {
+	identified := false
+	for _, sr := range record.SubRecords {
+		if sr.Type != egts.SrTermIdentity {
+			continue
+		}
+		identified = true
+		identity, err := egts.GetTermIdentity(sr)
+		if err != nil {
+			log.Printf("[WARN] %s: record %d: %v", h.remoteAddr, record.RecordNumber, err)
+			continue
+		}
+		h.imei = identity.IMEI
+		h.imsi = identity.IMSI
+		h.tid = identity.TerminalID
 	}
+	return identified
+}
 
+// processTeledataRecord makes a document for every EGTS_SR_POS_DATA in the
+// record. The subrecords that follow a SR_POS_DATA add to its document;
+// those before the first one have no position to belong to and are ignored.
+func (h *ConnectionHandler) processTeledataRecord(record *egts.Record) []*models.Document {
+	var documents []*models.Document
 	var doc *models.Document
 
 	for _, sr := range record.SubRecords {
-		if doc == nil && sr.Type != egts.SrTermIdentity && sr.Type != egts.SrPosData {
-			continue
-		}
-
-		switch sr.Type {
-		case egts.SrTermIdentity:
-			if identity, err := egts.GetTermIdentity(sr); err == nil {
-				h.imei = identity.IMEI
-				h.imsi = identity.IMSI
-				h.tid = identity.TerminalID
-			}
-
-		case egts.SrPosData:
-			if doc != nil {
-				continue
-			}
+		if sr.Type == egts.SrPosData {
+			doc = nil
 			pos, err := egts.GetPositionData(sr)
 			if err != nil {
-				return nil, err
+				log.Printf("[WARN] %s: record %d: %v", h.remoteAddr, record.RecordNumber, err)
+				continue
 			}
 			doc = h.createDocument()
 			doc.SetNavigationData(&models.NavigationData{
@@ -245,13 +263,19 @@ func (h *ConnectionHandler) processRecord(record *egts.Record) (*models.Document
 				ExtraDOP:  pos.ExtraDOP,
 			})
 			doc.SetPosDataExtras(pos.DigitalInputs, pos.Odometer)
+			documents = append(documents, doc)
+			continue
+		}
+		if doc == nil {
+			continue
+		}
 
+		switch sr.Type {
 		case egts.SrExtPosData:
 			ext, err := egts.GetExtPosData(sr)
 			if err != nil {
 				continue
 			}
-			// DOPs arrive scaled by 100; the document stores them scaled by 10.
 			doc.NavData.PDOP = scaleDOP(ext.PDOP)
 			doc.NavData.HDOP = scaleDOP(ext.HDOP)
 			doc.NavData.VDOP = scaleDOP(ext.VDOP)
@@ -296,14 +320,16 @@ func (h *ConnectionHandler) processRecord(record *egts.Record) (*models.Document
 		}
 	}
 
-	return doc, nil
+	return documents
 }
 
-func scaleDOP(v *uint16) *uint8 {
+// scaleDOP converts a DOP transmitted multiplied by 100 to whole units,
+// rounding up as the Python receiver did.
+func scaleDOP(v *uint16) *uint16 {
 	if v == nil {
 		return nil
 	}
-	s := uint8(*v / 10)
+	s := (*v + 99) / 100
 	return &s
 }
 
@@ -339,20 +365,15 @@ func (h *ConnectionHandler) saveDocuments(documents []*models.Document) error {
 	return nil
 }
 
-func (h *ConnectionHandler) sendResponse(packetID uint16, recordNumbers []uint16) error {
-	data, err := egts.NewResponseBuilder(packetID).BuildResponse(egts.ProcessingResultOK, recordNumbers, egts.RecordStatusOK)
-	if err != nil {
-		return fmt.Errorf("build response: %w", err)
-	}
-	return h.write(data)
+func (h *ConnectionHandler) sendErrorResponse(packetID uint16, processingResult uint8) error {
+	return h.write(egts.BuildResponse(h.nextPID(), packetID, processingResult, nil))
 }
 
-func (h *ConnectionHandler) sendErrorResponse(packetID uint16, processingResult uint8) error {
-	data, err := egts.NewResponseBuilder(packetID).BuildErrorResponse(processingResult)
-	if err != nil {
-		return fmt.Errorf("build error response: %w", err)
-	}
-	return h.write(data)
+// nextPID numbers the packets sent to the tracker.
+func (h *ConnectionHandler) nextPID() uint16 {
+	pid := h.pid
+	h.pid++
+	return pid
 }
 
 // write failures are fatal: the stream is unusable afterwards.

@@ -29,18 +29,24 @@ const (
 	EgtsTeleDataService = 2
 	EgtsCommandsService = 4
 
-	// Subrecord types (SRT).
-	SrRecordResponse = 0
-	SrTermIdentity   = 1
-	SrPosData        = 16
-	SrExtPosData     = 17
-	SrAdSensorsData  = 18
-	SrCountersData   = 19
-	SrStateData      = 20
-	SrAbsAnSensData  = 24
-	SrAbsCntrData    = 25
-	SrLiquidLevel    = 27
-	SrPassengers     = 28
+	// Subrecord types (SRT). Numbers are scoped to a service, so a subrecord
+	// must be interpreted according to the record's service type.
+	SrRecordResponse = 0 // any service
+
+	// EGTS_AUTH_SERVICE.
+	SrTermIdentity = 1
+	SrResultCode   = 9
+
+	// EGTS_TELEDATA_SERVICE.
+	SrPosData       = 16
+	SrExtPosData    = 17
+	SrAdSensorsData = 18
+	SrCountersData  = 19
+	SrStateData     = 20
+	SrAbsAnSensData = 24
+	SrAbsCntrData   = 25
+	SrLiquidLevel   = 27
+	SrPassengers    = 28
 )
 
 var (
@@ -278,16 +284,10 @@ func parseSubRecords(data []byte) ([]*SubRecord, error) {
 // EGTS timestamps count seconds from 2010-01-01 00:00:00 UTC.
 var egtsEpoch = time.Date(2010, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// convert3BytesToInt decodes a 24-bit little-endian two's complement integer.
-func convert3BytesToInt(data []byte) int32 {
-	if len(data) != 3 {
-		return 0
-	}
-	val := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16
-	if val&0x800000 != 0 {
-		val |= 0xFF000000
-	}
-	return int32(val)
+// uint24 decodes a 3-byte little-endian unsigned integer. GOST has no signed
+// 3-byte fields: where a sign exists (ALT) it is carried by a separate flag.
+func uint24(data []byte) uint32 {
+	return uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16
 }
 
 func checkSubRecord(sr *SubRecord, want uint8, minLen int, name string) error {
@@ -366,10 +366,10 @@ func GetPositionData(sr *SubRecord) (*PositionData, error) {
 	pos.Course = int(spd>>15)<<8 | int(dir)
 
 	// ODM is in units of 0.1 km.
-	pos.Odometer = uint32(convert3BytesToInt(d[16:19])) * 100
+	pos.Odometer = uint24(d[16:19]) * 100
 
 	if pos.AltitudeValid && len(d) >= 24 {
-		alt := convert3BytesToInt(d[21:24])
+		alt := int32(uint24(d[21:24]))
 		if spd>>14&0x01 != 0 {
 			alt = -alt
 		}
@@ -379,14 +379,13 @@ func GetPositionData(sr *SubRecord) (*PositionData, error) {
 	return pos, nil
 }
 
-// ExtPosData holds EGTS_SR_EXT_POS_DATA. DOP values are raw (scaled by 100).
+// ExtPosData holds EGTS_SR_EXT_POS_DATA. DOP values are raw (multiplied by 100).
 type ExtPosData struct {
-	VDOP       *uint16
-	HDOP       *uint16
-	PDOP       *uint16
-	Satellites *uint8
-	NorthSpeed *uint16
-	EastSpeed  *uint16
+	VDOP              *uint16
+	HDOP              *uint16
+	PDOP              *uint16
+	Satellites        *uint8
+	NavigationSystems *uint16 // NS, a bit mask of GLONASS, GPS, Galileo etc.
 }
 
 // StateData holds EGTS_SR_STATE_DATA. Voltages are in units of 0.1 V.
@@ -410,29 +409,29 @@ type TermIdentity struct {
 }
 
 type ADSensorsData struct {
-	DigitalInputsOutputs map[string]uint8 // "adio_<byte>_<bit>"
-	DigitalOutputs       map[string]uint8 // "dout_<bit>"
-	AnalogSensors        map[string]int32 // "ans_<n>"
+	DigitalInputsOutputs map[string]uint8  // "adio_<byte>_<bit>"
+	DigitalOutputs       map[string]uint8  // "dout_<bit>"
+	AnalogSensors        map[string]uint32 // "ans_<n>"
 }
 
 type LiquidLevelData struct {
 	SensorFlags       uint8
 	ModuleAddress     uint16
 	LevelMM           *uint32
-	LevelL            *uint32 // already multiplied by 10
-	NavDataNumber     uint8
-	SensorErrorStatus uint8
+	LevelL            *uint32 // the raw value multiplied by 10, as the Python receiver stored it
+	NavDataNumber     uint8   // LLSN, the sensor number
+	SensorErrorStatus uint8   // LLSEF
 }
 
 type CounterData struct {
 	CounterNumber uint8
-	CounterValue  int32
+	CounterValue  uint32
 	CounterTime   *time.Time // set for counter 105, whose value is a Unix timestamp
 }
 
 type AbsAnalogSensorData struct {
 	SensorNumber uint8
-	SensorValue  int32
+	SensorValue  uint32
 }
 
 // GetExtPosData decodes EGTS_SR_EXT_POS_DATA. Fields cut off by a short
@@ -462,7 +461,7 @@ func GetExtPosData(sr *SubRecord) (*ExtPosData, error) {
 		}
 	}
 	if flags&0x10 != 0 {
-		extPos.NorthSpeed = readUint16(r)
+		extPos.NavigationSystems = readUint16(r)
 	}
 
 	return extPos, nil
@@ -552,7 +551,7 @@ func GetADSensorsData(sr *SubRecord) (*ADSensorsData, error) {
 	sensors := &ADSensorsData{
 		DigitalInputsOutputs: make(map[string]uint8),
 		DigitalOutputs:       make(map[string]uint8),
-		AnalogSensors:        make(map[string]int32),
+		AnalogSensors:        make(map[string]uint32),
 	}
 
 	dioe, dout, asfe := sr.Data[0], sr.Data[1], sr.Data[2]
@@ -583,7 +582,7 @@ func GetADSensorsData(sr *SubRecord) (*ADSensorsData, error) {
 		if _, err := io.ReadFull(r, ans[:]); err != nil {
 			break
 		}
-		sensors.AnalogSensors[fmt.Sprintf("ans_%d", i)] = convert3BytesToInt(ans[:])
+		sensors.AnalogSensors[fmt.Sprintf("ans_%d", i)] = uint24(ans[:])
 	}
 
 	return sensors, nil
@@ -592,6 +591,7 @@ func GetADSensorsData(sr *SubRecord) (*ADSensorsData, error) {
 // GetLiquidLevelData decodes EGTS_SR_LIQUID_LEVEL_SENSOR.
 //
 // Layout: FLG(1) MADDR(2) LLSD(4, or the rest of the subrecord when RDF=1).
+// FLG: LLSEF(6) LLSVU(5-4) RDF(3) LLSN(2-0).
 func GetLiquidLevelData(sr *SubRecord) (*LiquidLevelData, error) {
 	if err := checkSubRecord(sr, SrLiquidLevel, 3, "SR_LIQUID_LEVEL_SENSOR"); err != nil {
 		return nil, err
@@ -603,12 +603,12 @@ func GetLiquidLevelData(sr *SubRecord) (*LiquidLevelData, error) {
 	}
 	flags := liquid.SensorFlags
 	liquid.NavDataNumber = flags & 0x07
-	liquid.SensorErrorStatus = flags >> 1 & 0x01
-	unit := flags >> 2 & 0x03
+	liquid.SensorErrorStatus = flags >> 6 & 0x01
+	unit := flags >> 4 & 0x03
 	llsd := sr.Data[3:]
 
 	var level uint32
-	if flags&0x10 == 0 {
+	if flags&0x08 == 0 {
 		if len(llsd) < 4 {
 			return liquid, nil
 		}
@@ -618,12 +618,8 @@ func GetLiquidLevelData(sr *SubRecord) (*LiquidLevelData, error) {
 		if n <= 0 || n > 8 || n > len(llsd) {
 			return liquid, nil
 		}
-		if n == 3 {
-			level = uint32(convert3BytesToInt(llsd[:3]))
-		} else {
-			for i := 0; i < n && i < 4; i++ {
-				level |= uint32(llsd[i]) << (8 * i)
-			}
+		for i := range min(n, 4) {
+			level |= uint32(llsd[i]) << (8 * i)
 		}
 	}
 
@@ -645,7 +641,7 @@ func GetCounterData(sr *SubRecord) (*CounterData, error) {
 
 	counter := &CounterData{
 		CounterNumber: sr.Data[0],
-		CounterValue:  convert3BytesToInt(sr.Data[1:4]),
+		CounterValue:  uint24(sr.Data[1:4]),
 	}
 	if counter.CounterNumber == 105 {
 		ts := time.Unix(int64(counter.CounterValue), 0)
@@ -661,6 +657,6 @@ func GetAbsAnalogSensorData(sr *SubRecord) (*AbsAnalogSensorData, error) {
 	}
 	return &AbsAnalogSensorData{
 		SensorNumber: sr.Data[0],
-		SensorValue:  convert3BytesToInt(sr.Data[1:4]),
+		SensorValue:  uint24(sr.Data[1:4]),
 	}, nil
 }

@@ -24,73 +24,87 @@ const (
 	ProcessingResultTfldError        = 139 // EGTS_PC_FLD_ERROR
 )
 
-const RecordStatusOK = 0
+// RFL of records sent by the platform: RSOD, the recipient is on the terminal side.
+const platformRecordFlags = 0x40
 
-// ResponseBuilder builds EGTS_PT_RESPONSE packets acknowledging one incoming packet.
-type ResponseBuilder struct {
-	packetID uint16
+// RecordConfirmation is one EGTS_SR_RECORD_RESPONSE: the confirmed record's
+// number and services, and the result of processing it.
+type RecordConfirmation struct {
+	RecordNumber         uint16
+	SourceServiceType    uint8 // SST of the confirmed record
+	RecipientServiceType uint8 // RST of the confirmed record
+	Status               uint8
 }
 
-func NewResponseBuilder(packetID uint16) *ResponseBuilder {
-	return &ResponseBuilder{packetID: packetID}
+// ConfirmRecord confirms r with status.
+func ConfirmRecord(r *Record, status uint8) RecordConfirmation {
+	return RecordConfirmation{
+		RecordNumber:         r.RecordNumber,
+		SourceServiceType:    r.SourceServiceType,
+		RecipientServiceType: r.RecipientServiceType,
+		Status:               status,
+	}
 }
 
-func (rb *ResponseBuilder) BuildErrorResponse(processingResult uint8) ([]byte, error) {
-	return rb.BuildResponse(processingResult, nil, 0)
+// BuildResponse builds an EGTS_PT_RESPONSE with packet ID pid that answers
+// packet rpid. Records are confirmed only when processingResult is OK.
+func BuildResponse(pid, rpid uint16, processingResult uint8, records []RecordConfirmation) []byte {
+	frame := bytes.NewBuffer(make([]byte, 0, 3+len(records)*13))
+	binary.Write(frame, binary.LittleEndian, rpid)
+	frame.WriteByte(processingResult)
+
+	if processingResult == ProcessingResultOK {
+		for _, rc := range records {
+			// The response comes from the service that received the record,
+			// so its source and recipient are swapped.
+			var srd [3]byte
+			binary.LittleEndian.PutUint16(srd[:], rc.RecordNumber)
+			srd[2] = rc.Status
+			writeRecord(frame, rc.RecordNumber, rc.RecipientServiceType, rc.SourceServiceType, SrRecordResponse, srd[:])
+		}
+	}
+	return buildPacket(pid, PtResponse, frame.Bytes())
 }
 
-// BuildResponse builds a response packet. When processingResult is OK, every
-// record number gets an EGTS_SR_RECORD_RESPONSE with recordStatus.
-func (rb *ResponseBuilder) BuildResponse(processingResult uint8, recordNumbers []uint16, recordStatus uint8) ([]byte, error) {
-	sfd := rb.buildServiceFrameData(processingResult, recordNumbers, recordStatus)
-
-	buf := bytes.NewBuffer(make([]byte, 0, MinHeaderLength+len(sfd)+2))
-	rb.writeHeader(buf, uint16(len(sfd)))
-	buf.Write(sfd)
-	binary.Write(buf, binary.LittleEndian, utils.CRC16(sfd))
-
-	return buf.Bytes(), nil
+// BuildResultCode builds an EGTS_PT_APPDATA carrying EGTS_SR_RESULT_CODE,
+// which the platform sends after the terminal has identified itself.
+func BuildResultCode(pid, recordNumber uint16, code uint8) []byte {
+	frame := bytes.NewBuffer(make([]byte, 0, 13))
+	writeRecord(frame, recordNumber, EgtsAuthService, EgtsAuthService, SrResultCode, []byte{code})
+	return buildPacket(pid, PtAppdata, frame.Bytes())
 }
 
-// writeHeader writes an 11-byte transport header with all flags cleared.
-func (rb *ResponseBuilder) writeHeader(buf *bytes.Buffer, frameDataLength uint16) {
+// writeRecord writes a record RL(2) RN(2) RFL(1) SST(1) RST(1) holding a
+// single subrecord SRT(1) SRL(2) SRD.
+func writeRecord(buf *bytes.Buffer, rn uint16, sst, rst, srt uint8, srd []byte) {
+	binary.Write(buf, binary.LittleEndian, uint16(3+len(srd)))
+	binary.Write(buf, binary.LittleEndian, rn)
+	buf.WriteByte(platformRecordFlags)
+	buf.WriteByte(sst)
+	buf.WriteByte(rst)
+
+	buf.WriteByte(srt)
+	binary.Write(buf, binary.LittleEndian, uint16(len(srd)))
+	buf.Write(srd)
+}
+
+// buildPacket wraps frame data in an 11-byte transport header with all flags
+// cleared, followed by SFRCS.
+func buildPacket(pid uint16, packetType uint8, frame []byte) []byte {
+	buf := bytes.NewBuffer(make([]byte, 0, MinHeaderLength+len(frame)+2))
+
 	var h [MinHeaderLength]byte
 	h[0] = ProtocolVersion
 	h[3] = MinHeaderLength
-	binary.LittleEndian.PutUint16(h[5:], frameDataLength)
-	binary.LittleEndian.PutUint16(h[7:], rb.packetID)
-	h[9] = PtResponse
+	binary.LittleEndian.PutUint16(h[5:], uint16(len(frame)))
+	binary.LittleEndian.PutUint16(h[7:], pid)
+	h[9] = packetType
 	h[10] = utils.CRC8(h[:10])
 	buf.Write(h[:])
-}
 
-// buildServiceFrameData builds RPID(2) PR(1) followed by one record per confirmed record number.
-func (rb *ResponseBuilder) buildServiceFrameData(processingResult uint8, recordNumbers []uint16, recordStatus uint8) []byte {
-	buf := bytes.NewBuffer(make([]byte, 0, 3+len(recordNumbers)*13))
-	binary.Write(buf, binary.LittleEndian, rb.packetID)
-	buf.WriteByte(processingResult)
-
-	if processingResult == ProcessingResultOK {
-		for _, rn := range recordNumbers {
-			writeRecordResponse(buf, rn, recordStatus)
-		}
+	if len(frame) > 0 {
+		buf.Write(frame)
+		binary.Write(buf, binary.LittleEndian, utils.CRC16(frame))
 	}
 	return buf.Bytes()
-}
-
-// writeRecordResponse writes a record RL(2) RN(2) RFL(1) SST(1) RST(1) holding
-// one EGTS_SR_RECORD_RESPONSE subrecord: SRT(1) SRL(2) CRN(2) RST(1).
-func writeRecordResponse(buf *bytes.Buffer, recordNumber uint16, recordStatus uint8) {
-	const subRecordLen = 6
-
-	binary.Write(buf, binary.LittleEndian, uint16(subRecordLen))
-	binary.Write(buf, binary.LittleEndian, recordNumber)
-	buf.WriteByte(0x40) // RFL: RSOD
-	buf.WriteByte(EgtsAuthService)
-	buf.WriteByte(EgtsAuthService)
-
-	buf.WriteByte(SrRecordResponse)
-	binary.Write(buf, binary.LittleEndian, uint16(3))
-	binary.Write(buf, binary.LittleEndian, recordNumber)
-	buf.WriteByte(recordStatus)
 }

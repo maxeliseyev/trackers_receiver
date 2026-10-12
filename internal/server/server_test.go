@@ -14,6 +14,7 @@ import (
 type MockStorage struct {
 	mu             sync.Mutex
 	pushBatchCalls int
+	pushed         map[string][]*models.Document
 }
 
 func (m *MockStorage) Push(ctx context.Context, queue string, doc *models.Document) error {
@@ -24,7 +25,17 @@ func (m *MockStorage) PushBatch(ctx context.Context, queue string, docs []*model
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pushBatchCalls++
+	if m.pushed == nil {
+		m.pushed = make(map[string][]*models.Document)
+	}
+	m.pushed[queue] = append(m.pushed[queue], docs...)
 	return nil
+}
+
+func (m *MockStorage) documents(queue string) []*models.Document {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.pushed[queue]
 }
 
 func (m *MockStorage) PushRaw(ctx context.Context, queue string, data []byte) error {

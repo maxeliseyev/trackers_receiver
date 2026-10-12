@@ -40,10 +40,10 @@ type NavigationData struct {
 	Altitude *int32 `msgpack:"altitude"` // metres
 	Track    uint32 `msgpack:"track"`    // odometer, metres
 
-	Satellites *uint8 `msgpack:"nsat"`
-	PDOP       *uint8 `msgpack:"pdop"`
-	HDOP       *uint8 `msgpack:"hdop"`
-	VDOP       *uint8 `msgpack:"vdop"`
+	Satellites *uint8  `msgpack:"nsat"`
+	PDOP       *uint16 `msgpack:"pdop"`
+	HDOP       *uint16 `msgpack:"hdop"`
+	VDOP       *uint16 `msgpack:"vdop"`
 
 	// Voltages in units of 0.1 V.
 	BatVoltage   *uint8 `msgpack:"bat_voltage"`
