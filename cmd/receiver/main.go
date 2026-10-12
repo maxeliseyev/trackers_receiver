@@ -53,6 +53,7 @@ func main() {
 
 	srvConfig := &server.Config{
 		MaxConnections: cfg.Server.MaxConnections,
+		ProxyProtocol:  cfg.Server.UseHAProxy,
 		Connection:     connConfig,
 	}
 	if rl := cfg.RateLimit; rl.Enabled {
@@ -75,8 +76,8 @@ func main() {
 		log.Fatalf("Listen on %s: %v", cfg.Server.GetServerAddr(), err)
 	}
 
-	log.Printf("Listening on %s, Redis %s, queues %s/%s",
-		listener.Addr(), cfg.Redis.GetRedisAddr(), cfg.Queue.ChargerName, cfg.Queue.FasttrackName)
+	log.Printf("Listening on %s (PROXY protocol %v), Redis %s, queues %s/%s",
+		listener.Addr(), cfg.Server.UseHAProxy, cfg.Redis.GetRedisAddr(), cfg.Queue.ChargerName, cfg.Queue.FasttrackName)
 
 	go srv.Serve(listener)
 

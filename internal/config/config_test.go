@@ -34,8 +34,12 @@ func TestLoadDefaultConfig(t *testing.T) {
 		t.Errorf("Queue.ChargerName = %s; expected charger", cfg.Queue.ChargerName)
 	}
 
-	if cfg.Queue.ChargerMaxLen != 2999999 {
-		t.Errorf("Queue.ChargerMaxLen = %d; expected 2999999", cfg.Queue.ChargerMaxLen)
+	if cfg.Queue.ChargerMaxLen != 99999 {
+		t.Errorf("Queue.ChargerMaxLen = %d; expected 99999", cfg.Queue.ChargerMaxLen)
+	}
+
+	if cfg.Server.UseHAProxy {
+		t.Error("Server.UseHAProxy is on by default")
 	}
 }
 
@@ -45,7 +49,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	os.Setenv("SERVER_PORT", "8080")
 	os.Setenv("REDIS_HOST", "redis-server")
 	os.Setenv("REDIS_PORT", "6380")
-	os.Setenv("QUEUE_CHARGER_NAME", "test_charger")
+	os.Setenv("CHARGER_QUEUE", "test_charger")
+	os.Setenv("USE_HAPROXY", "true")
+	os.Setenv("CONNECTION_TIMEOUT", "120")
 	defer clearEnv()
 
 	cfg, err := Load()
@@ -67,6 +73,14 @@ func TestLoadConfigFromEnv(t *testing.T) {
 
 	if cfg.Queue.ChargerName != "test_charger" {
 		t.Errorf("Queue.ChargerName = %s; expected test_charger", cfg.Queue.ChargerName)
+	}
+
+	if !cfg.Server.UseHAProxy {
+		t.Error("Server.UseHAProxy = false; expected true")
+	}
+
+	if cfg.Server.ReadTimeout != 120*time.Second {
+		t.Errorf("Server.ReadTimeout = %v; expected 2m", cfg.Server.ReadTimeout)
 	}
 }
 
@@ -165,9 +179,9 @@ func TestRateLimitConfig(t *testing.T) {
 
 func clearEnv() {
 	envVars := []string{
-		"SERVER_PORT", "SERVER_READ_TIMEOUT", "SERVER_WRITE_TIMEOUT", "SERVER_MAX_CONNECTIONS",
+		"SERVER_PORT", "USE_HAPROXY", "CONNECTION_TIMEOUT", "SERVER_WRITE_TIMEOUT", "SERVER_MAX_CONNECTIONS",
 		"REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "REDIS_DB", "REDIS_POOL_SIZE", "REDIS_MAX_RETRIES",
-		"QUEUE_CHARGER_NAME", "QUEUE_CHARGER_MAX_LEN", "QUEUE_FASTTRACK_NAME", "QUEUE_FASTTRACK_MAX_LEN",
+		"CHARGER_QUEUE", "CHARGER_QUEUE_MAX_LEN", "FASTTRACK_QUEUE", "FASTTRACK_QUEUE_MAX_LEN",
 		"RATE_LIMIT_ENABLED", "RATE_LIMIT_MAX_PER_WINDOW", "RATE_LIMIT_WINDOW", "RATE_LIMIT_BLOCK_DURATION",
 		"RATE_LIMIT_WHITELIST",
 	}

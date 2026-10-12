@@ -9,29 +9,33 @@ converts navigation records to MessagePack documents and pushes them to Redis li
   connected. Connections beyond `SERVER_MAX_CONNECTIONS` are closed right after accept.
 - Every packet is checked against its header CRC8 and body CRC16 and acknowledged with
   `EGTS_PT_RESPONSE`.
-- Records containing `SR_POS_DATA` become documents; `SR_EXT_POS_DATA`, `SR_STATE_DATA`,
-  `SR_LIQUID_LEVEL_SENSOR` and `SR_ABS_CNTR_DATA` in the same record are merged in.
-  `SR_TERM_IDENTITY` provides the IMEI/IMSI.
+- Every record is confirmed. Each `SR_POS_DATA` becomes a document; the `SR_EXT_POS_DATA`,
+  `SR_STATE_DATA`, `SR_LIQUID_LEVEL_SENSOR` and `SR_ABS_CNTR_DATA` that follow it are merged in.
+- `SR_TERM_IDENTITY` provides the IMEI/IMSI and is answered with `EGTS_SR_RESULT_CODE`;
+  terminals are not authenticated.
 - Each document is `LPUSH`ed to both the charger and fasttrack queues, which are trimmed to
-  their configured maximum length. The format matches the previous Python receiver.
+  their configured maximum length. The document format follows the previous Python receiver.
 
 - New connections are rate limited per source IP, and an IP that keeps sending malformed
   data is blocked, with the block doubling on each repeat (up to 24 h). An IP that sent a
   valid packet within the last hour is exempt: carrier NAT addresses and retranslators carry
-  many trackers, sometimes next to a device sending garbage. If the receiver sits behind a
-  load balancer, add its address to `RATE_LIMIT_WHITELIST`.
+  many trackers, sometimes next to a device sending garbage. Behind HAProxy set
+  `USE_HAPROXY=true`: limits then apply to the client address from the PROXY header.
 
 Not implemented yet: routed headers (`RTE=1`), encryption and compression, structured
 logging, a metrics endpoint.
 
 ## Configuration
 
-Environment variables (a `.env` file is loaded if present, see `.env.example`):
+Environment variables (a `.env` file is loaded if present, see `.env.example`). Variables
+shared with the Python receiver keep its names and defaults, so its deployments can switch
+images without changes.
 
 | Variable | Default | |
 |---|---|---|
 | `SERVER_PORT` | `36000` | |
-| `SERVER_READ_TIMEOUT` | `600` | seconds to wait for the next packet |
+| `USE_HAPROXY` | `false` | expect a PROXY protocol v1 header (HAProxy `send-proxy`) on every connection |
+| `CONNECTION_TIMEOUT` | `600` | seconds to wait for the next packet |
 | `SERVER_WRITE_TIMEOUT` | `30` | seconds |
 | `SERVER_MAX_CONNECTIONS` | `10000` | concurrent tracker connections; needs a matching `nofile` limit |
 | `REDIS_HOST` | `localhost` | |
@@ -40,10 +44,10 @@ Environment variables (a `.env` file is loaded if present, see `.env.example`):
 | `REDIS_DB` | `0` | |
 | `REDIS_POOL_SIZE` | `100` | |
 | `REDIS_MAX_RETRIES` | `3` | |
-| `QUEUE_CHARGER_NAME` | `charger` | |
-| `QUEUE_CHARGER_MAX_LEN` | `2999999` | |
-| `QUEUE_FASTTRACK_NAME` | `fasttrack` | |
-| `QUEUE_FASTTRACK_MAX_LEN` | `2999999` | |
+| `CHARGER_QUEUE` | `charger` | |
+| `CHARGER_QUEUE_MAX_LEN` | `99999` | |
+| `FASTTRACK_QUEUE` | `fasttrack` | |
+| `FASTTRACK_QUEUE_MAX_LEN` | `99999` | |
 | `RATE_LIMIT_ENABLED` | `true` | |
 | `RATE_LIMIT_MAX_PER_WINDOW` | `300` | new connections per unknown IP per window |
 | `RATE_LIMIT_WINDOW` | `10` | seconds |

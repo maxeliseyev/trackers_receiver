@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -163,7 +164,7 @@ func TestMaxConnections(t *testing.T) {
 	}
 }
 
-func TestRateLimitedSubmit(t *testing.T) {
+func TestRateLimitedConnectionIsClosed(t *testing.T) {
 	s := New(&MockStorage{}, &Config{
 		MaxConnections: 10,
 		RateLimiter: &RateLimiterConfig{
@@ -180,11 +181,16 @@ func TestRateLimitedSubmit(t *testing.T) {
 	defer firstClient.Close()
 	second, secondClient := pipeFrom("10.0.0.1")
 	defer secondClient.Close()
-	if err := s.Submit(first); err != nil {
-		t.Fatalf("first connection rejected: %v", err)
+	s.Submit(first)
+	waitFor(t, func() bool { return s.rateLimiter.Stats()["total_allowed"] == int64(1) }, "first connection was not checked")
+	s.Submit(second)
+
+	secondClient.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := secondClient.Read(make([]byte, 1)); err != io.EOF {
+		t.Errorf("second connection from the same IP: read returned %v; expected EOF", err)
 	}
-	if err := s.Submit(second); err == nil {
-		t.Error("second connection from the same IP was not rate limited")
+	if got := s.Stats().TotalRejected.Load(); got != 1 {
+		t.Errorf("TotalRejected = %d; expected 1", got)
 	}
 }
 

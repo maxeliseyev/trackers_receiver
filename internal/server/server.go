@@ -16,10 +16,11 @@ import (
 // Server serves each tracker connection in its own goroutine. Connections
 // beyond MaxConnections are closed right after accept.
 type Server struct {
-	storage     storage.QueueStorage
-	connConfig  *ConnectionConfig
-	maxConns    int
-	rateLimiter *RateLimiter // nil when disabled
+	storage       storage.QueueStorage
+	connConfig    *ConnectionConfig
+	maxConns      int
+	proxyProtocol bool
+	rateLimiter   *RateLimiter // nil when disabled
 
 	mu     sync.Mutex
 	closed bool
@@ -31,7 +32,7 @@ type Server struct {
 
 type Stats struct {
 	TotalAccepted  atomic.Int64
-	TotalRejected  atomic.Int64 // over the limit, rate limited or shutting down
+	TotalRejected  atomic.Int64 // over the limit, rate limited, bad PROXY header or shutting down
 	TotalProcessed atomic.Int64 // connections that ended without error
 	TotalFailed    atomic.Int64
 	StartTime      time.Time
@@ -39,6 +40,9 @@ type Stats struct {
 
 type Config struct {
 	MaxConnections int
+	// ProxyProtocol expects every connection to start with a PROXY protocol
+	// v1 header, as sent by HAProxy with "send-proxy".
+	ProxyProtocol bool
 	// RateLimiter enables per-IP rate limiting; nil disables it.
 	RateLimiter *RateLimiterConfig
 	Connection  *ConnectionConfig
@@ -54,10 +58,11 @@ func DefaultConfig() *Config {
 
 func New(storage storage.QueueStorage, config *Config) *Server {
 	s := &Server{
-		storage:    storage,
-		connConfig: config.Connection,
-		maxConns:   config.MaxConnections,
-		active:     make(map[net.Conn]struct{}),
+		storage:       storage,
+		connConfig:    config.Connection,
+		maxConns:      config.MaxConnections,
+		proxyProtocol: config.ProxyProtocol,
+		active:        make(map[net.Conn]struct{}),
 	}
 	if config.RateLimiter != nil {
 		s.rateLimiter = NewRateLimiter(config.RateLimiter)
@@ -90,11 +95,8 @@ func (s *Server) Serve(listener net.Listener) {
 }
 
 // Submit starts serving conn. On error the connection has already been closed.
+// The rate limit is checked later, once the client address is known.
 func (s *Server) Submit(conn net.Conn) error {
-	if s.rateLimiter != nil && !s.rateLimiter.Allow(conn) {
-		return s.reject(conn, &ServerError{Code: "RATE_LIMITED", Message: "connection rate limit exceeded or IP blocked"})
-	}
-
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -122,13 +124,35 @@ func (s *Server) reject(conn net.Conn, err error) error {
 	return err
 }
 
-func (s *Server) serveConn(conn net.Conn) {
+// proxyHeaderTimeout bounds the wait for the PROXY header, which HAProxy
+// sends right after connecting.
+const proxyHeaderTimeout = 10 * time.Second
+
+func (s *Server) serveConn(accepted net.Conn) {
 	defer s.wg.Done()
 	defer func() {
 		s.mu.Lock()
-		delete(s.active, conn)
+		delete(s.active, accepted)
 		s.mu.Unlock()
 	}()
+
+	conn := accepted
+	if s.proxyProtocol {
+		var err error
+		if conn, err = readProxyHeader(accepted, proxyHeaderTimeout); err != nil {
+			s.reject(accepted, err)
+			if !errors.Is(err, errNoProxyHeader) && !s.isClosed() {
+				log.Printf("[WARN] %s: %v", accepted.RemoteAddr(), err)
+			}
+			return
+		}
+	}
+
+	if s.rateLimiter != nil && !s.rateLimiter.Allow(conn) {
+		s.reject(conn, nil)
+		log.Printf("[WARN] reject %s: connection rate limit exceeded or IP blocked", conn.RemoteAddr())
+		return
+	}
 
 	handler := NewConnectionHandler(conn, s.storage, s.connConfig)
 	if s.rateLimiter != nil {

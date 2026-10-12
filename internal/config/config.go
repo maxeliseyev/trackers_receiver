@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// Config is read from the environment. Variables shared with the Python
+// receiver (REDIS_HOST, REDIS_PORT, USE_HAPROXY, CONNECTION_TIMEOUT and the
+// queue settings) keep its names and defaults, so existing deployments work
+// unchanged.
 type Config struct {
 	Server    ServerConfig
 	Redis     RedisConfig
@@ -16,7 +20,9 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port         int
+	Port int
+	// UseHAProxy expects a PROXY protocol header on every connection.
+	UseHAProxy   bool
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	// MaxConnections caps concurrently served tracker connections.
@@ -57,7 +63,8 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
 			Port:           getEnvAsInt("SERVER_PORT", 36000),
-			ReadTimeout:    getEnvAsDuration("SERVER_READ_TIMEOUT", 600*time.Second),
+			UseHAProxy:     getEnvAsBool("USE_HAPROXY", false),
+			ReadTimeout:    getEnvAsDuration("CONNECTION_TIMEOUT", 600*time.Second),
 			WriteTimeout:   getEnvAsDuration("SERVER_WRITE_TIMEOUT", 30*time.Second),
 			MaxConnections: getEnvAsInt("SERVER_MAX_CONNECTIONS", 10000),
 		},
@@ -70,10 +77,10 @@ func Load() (*Config, error) {
 			MaxRetries: getEnvAsInt("REDIS_MAX_RETRIES", 3),
 		},
 		Queue: QueueConfig{
-			ChargerName:     getEnv("QUEUE_CHARGER_NAME", "charger"),
-			ChargerMaxLen:   getEnvAsInt("QUEUE_CHARGER_MAX_LEN", 2999999),
-			FasttrackName:   getEnv("QUEUE_FASTTRACK_NAME", "fasttrack"),
-			FasttrackMaxLen: getEnvAsInt("QUEUE_FASTTRACK_MAX_LEN", 2999999),
+			ChargerName:     getEnv("CHARGER_QUEUE", "charger"),
+			ChargerMaxLen:   getEnvAsInt("CHARGER_QUEUE_MAX_LEN", 99999),
+			FasttrackName:   getEnv("FASTTRACK_QUEUE", "fasttrack"),
+			FasttrackMaxLen: getEnvAsInt("FASTTRACK_QUEUE_MAX_LEN", 99999),
 		},
 		RateLimit: RateLimitConfig{
 			Enabled:       getEnvAsBool("RATE_LIMIT_ENABLED", true),
