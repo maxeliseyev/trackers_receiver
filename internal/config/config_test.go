@@ -22,7 +22,6 @@ func TestLoadDefaultConfig(t *testing.T) {
 		t.Errorf("Server.ReadTimeout = %v; expected 600s", cfg.Server.ReadTimeout)
 	}
 
-	// Проверяем дефолтные значения Redis
 	if cfg.Redis.Host != "localhost" {
 		t.Errorf("Redis.Host = %s; expected localhost", cfg.Redis.Host)
 	}
@@ -31,7 +30,6 @@ func TestLoadDefaultConfig(t *testing.T) {
 		t.Errorf("Redis.Port = %d; expected 6379", cfg.Redis.Port)
 	}
 
-	// Проверяем дефолтные значения очередей
 	if cfg.Queue.ChargerName != "charger" {
 		t.Errorf("Queue.ChargerName = %s; expected charger", cfg.Queue.ChargerName)
 	}
@@ -39,8 +37,6 @@ func TestLoadDefaultConfig(t *testing.T) {
 	if cfg.Queue.ChargerMaxLen != 2999999 {
 		t.Errorf("Queue.ChargerMaxLen = %d; expected 2999999", cfg.Queue.ChargerMaxLen)
 	}
-
-	t.Log("Default configuration loaded successfully")
 }
 
 func TestLoadConfigFromEnv(t *testing.T) {
@@ -57,7 +53,6 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		t.Fatalf("Config loading failed: %v", err)
 	}
 
-	// Проверяем, что значения загрузились из ENV
 	if cfg.Server.Port != 8080 {
 		t.Errorf("Server.Port = %d; expected 8080", cfg.Server.Port)
 	}
@@ -73,8 +68,6 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.Queue.ChargerName != "test_charger" {
 		t.Errorf("Queue.ChargerName = %s; expected test_charger", cfg.Queue.ChargerName)
 	}
-
-	t.Log("Configuration from ENV loaded successfully")
 }
 
 func TestValidateInvalidPort(t *testing.T) {
@@ -87,8 +80,6 @@ func TestValidateInvalidPort(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error for invalid port")
 	}
-
-	t.Logf("Invalid port error: %v", err)
 }
 
 func TestValidateEmptyRedisHost(t *testing.T) {
@@ -107,8 +98,6 @@ func TestValidateEmptyRedisHost(t *testing.T) {
 	if cfg.Redis.Host != "localhost" {
 		t.Errorf("Redis.Host = %s; expected localhost (default value)", cfg.Redis.Host)
 	}
-
-	t.Log("Empty REDIS_HOST correctly replaced with default value")
 }
 
 func TestGetRedisAddr(t *testing.T) {

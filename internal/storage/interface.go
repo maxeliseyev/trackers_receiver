@@ -2,89 +2,47 @@ package storage
 
 import (
 	"context"
-	"time"
 
 	"trackers-receiver/pkg/models"
 )
 
-// QueueStorage универсальный интерфейс для работы с очередями сообщений
-// Поддерживает Redis (сейчас) и будущие реализации (RabbitMQ, Kafka)
-//
-// Дизайн принципы:
-// 1. Простота - минимальный API для основных операций
-// 2. Гибкость - легко добавить новые реализации
-// 3. Производительность - поддержка batch операций
-// 4. Наблюдаемость - встроенная статистика
+// QueueStorage is a sink for serialized documents grouped into named queues.
 type QueueStorage interface {
-	// Push добавляет один документ в указанную очередь
-	// queue - имя очереди ("charger", "fasttrack", и т.д.)
-	// doc - документ для сохранения
-	//
-	// Возвращает ошибку если:
-	// - Не удалось сериализовать документ
-	// - Не удалось записать в очередь
-	// - Превышен таймаут операции
 	Push(ctx context.Context, queue string, doc *models.Document) error
 
-	// PushBatch добавляет множество документов за одну операцию
-	// Более эффективно чем N вызовов Push() для большинства реализаций
-	//
-	// Семантика:
-	// - Redis: использует pipeline (все или ничего не гарантируется)
-	// - RabbitMQ: использует транзакции (все или ничего)
-	// - Kafka: использует batch send (все или ничего)
+	// PushBatch writes all docs in one round trip. It is not atomic: on error
+	// some documents may already be in the queue.
 	PushBatch(ctx context.Context, queue string, docs []*models.Document) error
 
-	// PushRaw добавляет сырые данные (уже сериализованные)
-	// Используется для оптимизации когда сериализация уже выполнена
 	PushRaw(ctx context.Context, queue string, data []byte) error
 
-	// Health проверяет работоспособность хранилища
-	// Используется для health check endpoints
-	//
-	// Возвращает nil если все ок, иначе ошибку с описанием проблемы
 	Health(ctx context.Context) error
-
-	// Stats возвращает статистику работы хранилища
-	// Используется для мониторинга и отладки
 	Stats() *Stats
-
-	// Close закрывает соединение с хранилищем
-	// После вызова Close() все операции будут возвращать ошибку
 	Close() error
 }
 
-// Stats статистика работы хранилища
 type Stats struct {
-	// Операции
-	TotalPushed      int64         // Всего успешно записано документов
-	TotalFailed      int64         // Всего неудачных попыток
-	TotalBytes       int64         // Всего байт записано
-	CurrentQPS       float64       // Текущий QPS (queries per second)
+	TotalPushed int64
+	TotalFailed int64
+	TotalBytes  int64
 
-	// Производительность
-	AvgLatencyMs     float64       // Средняя латентность операций (мс)
-	P95LatencyMs     float64       // 95-й перцентиль латентности (мс)
-	P99LatencyMs     float64       // 99-й перцентиль латентности (мс)
+	AvgLatencyMs float64
+	P95LatencyMs float64
+	P99LatencyMs float64
 
-	// Очереди (опционально, зависит от реализации)
-	QueueSizes       map[string]int64 // Размеры очередей
-	QueueLags        map[string]int64 // Отставание consumers
+	QueueSizes map[string]int64
 
-	// Здоровье
-	LastError        error         // Последняя ошибка
-	LastErrorTime    time.Time     // Время последней ошибки
-	HealthStatus     HealthStatus  // Текущий статус здоровья
+	LastError    error
+	HealthStatus HealthStatus
 }
 
-// HealthStatus статус здоровья хранилища
 type HealthStatus int
 
 const (
-	HealthStatusUnknown HealthStatus = iota // Неизвестно (еще не проверяли)
-	HealthStatusHealthy                     // Все ок
-	HealthStatusDegraded                    // Работает, но есть проблемы
-	HealthStatusUnhealthy                   // Не работает
+	HealthStatusUnknown HealthStatus = iota
+	HealthStatusHealthy
+	HealthStatusDegraded
+	HealthStatusUnhealthy
 )
 
 func (h HealthStatus) String() string {
@@ -100,37 +58,10 @@ func (h HealthStatus) String() string {
 	}
 }
 
-// BatchConfig конфигурация для batch операций
-type BatchConfig struct {
-	// MaxBatchSize максимальное количество документов в одном batch
-	MaxBatchSize int
-
-	// FlushInterval максимальное время ожидания перед отправкой неполного batch
-	FlushInterval time.Duration
-
-	// MaxRetries максимальное количество повторных попыток при ошибке
-	MaxRetries int
-
-	// RetryDelay задержка между повторными попытками
-	RetryDelay time.Duration
-}
-
-// DefaultBatchConfig возвращает конфигурацию по умолчанию
-func DefaultBatchConfig() *BatchConfig {
-	return &BatchConfig{
-		MaxBatchSize:  1000,
-		FlushInterval: 100 * time.Millisecond,
-		MaxRetries:    3,
-		RetryDelay:    100 * time.Millisecond,
-	}
-}
-
-// StorageError стандартная ошибка хранилища
 type StorageError struct {
-	Op      string // Операция (Push, PushBatch, и т.д.)
-	Queue   string // Имя очереди
-	Err     error  // Исходная ошибка
-	Retries int    // Количество попыток
+	Op    string
+	Queue string
+	Err   error
 }
 
 func (e *StorageError) Error() string {
@@ -144,11 +75,6 @@ func (e *StorageError) Unwrap() error {
 	return e.Err
 }
 
-// NewStorageError создает новую ошибку хранилища
 func NewStorageError(op, queue string, err error) *StorageError {
-	return &StorageError{
-		Op:    op,
-		Queue: queue,
-		Err:   err,
-	}
+	return &StorageError{Op: op, Queue: queue, Err: err}
 }

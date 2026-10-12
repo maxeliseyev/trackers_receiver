@@ -17,7 +17,6 @@ func TestWorkerPoolUnderLoad(t *testing.T) {
 		t.Skip("Skipping load test in short mode")
 	}
 
-	// Setup Redis
 	cfg := &redis.Config{
 		Host:     "localhost",
 		Port:     6379,
@@ -37,11 +36,9 @@ func TestWorkerPoolUnderLoad(t *testing.T) {
 	ctx := context.Background()
 	storage.ClearQueue(ctx, "test_charger")
 
-	// Create worker pool with limited capacity
 	poolConfig := &server.PoolConfig{
 		NumWorkers:        4,
 		QueueSize:         100,
-		ShutdownTimeout:   10 * time.Second,
 		RateLimiterConfig: nil,
 		ConnectionConfig:  server.DefaultConnectionConfig(),
 	}
@@ -54,7 +51,6 @@ func TestWorkerPoolUnderLoad(t *testing.T) {
 		pool.Shutdown(shutdownCtx)
 	}()
 
-	// Start server
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to start listener: %v", err)
@@ -63,7 +59,6 @@ func TestWorkerPoolUnderLoad(t *testing.T) {
 
 	serverAddr := listener.Addr().String()
 
-	// Accept connections
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -76,7 +71,6 @@ func TestWorkerPoolUnderLoad(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Send many concurrent connections
 	numConnections := 200
 	var wg sync.WaitGroup
 	successCount := 0
@@ -129,7 +123,6 @@ func TestWorkerPoolUnderLoad(t *testing.T) {
 	t.Logf("  Duration: %v", duration)
 	t.Logf("  Throughput: %.2f conn/sec", float64(numConnections)/duration.Seconds())
 
-	// Check worker pool stats
 	stats := pool.Stats()
 	t.Logf("Worker Pool Stats:")
 	t.Logf("  Total Accepted: %d", stats.TotalAccepted.Load())
@@ -142,10 +135,8 @@ func TestWorkerPoolUnderLoad(t *testing.T) {
 		t.Error("Expected some accepted connections")
 	}
 
-	// Wait for processing
 	time.Sleep(2 * time.Second)
 
-	// Check Redis queue
 	queueLen, err := storage.GetQueueLength(ctx, "test_charger")
 	if err != nil {
 		t.Fatalf("Failed to get queue length: %v", err)
@@ -164,7 +155,6 @@ func TestRateLimiterIntegration(t *testing.T) {
 		t.Skip("Skipping rate limiter test in short mode")
 	}
 
-	// Setup Redis
 	cfg := &redis.Config{
 		Host:     "localhost",
 		Port:     6379,
@@ -181,7 +171,6 @@ func TestRateLimiterIntegration(t *testing.T) {
 	}
 	defer storage.Close()
 
-	// Create pool with strict rate limiting
 	rateLimiterConfig := &server.RateLimiterConfig{
 		MaxConnectionsPerWindow: 5,
 		WindowDuration:          2 * time.Second,
@@ -193,7 +182,6 @@ func TestRateLimiterIntegration(t *testing.T) {
 	poolConfig := &server.PoolConfig{
 		NumWorkers:        2,
 		QueueSize:         10,
-		ShutdownTimeout:   5 * time.Second,
 		RateLimiterConfig: rateLimiterConfig,
 		ConnectionConfig:  server.DefaultConnectionConfig(),
 	}
@@ -206,7 +194,6 @@ func TestRateLimiterIntegration(t *testing.T) {
 		pool.Shutdown(shutdownCtx)
 	}()
 
-	// Start server
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to start listener: %v", err)
@@ -251,7 +238,7 @@ func TestRateLimiterIntegration(t *testing.T) {
 
 	t.Logf("Rate limiter test: %d/%d connections succeeded", successCount, 10)
 
-	// First 5 should succeed, rest should be rate limited
+	// limit is 5 per window; the rest should be rate limited
 	if successCount > 6 {
 		t.Errorf("Rate limiter too permissive: %d connections succeeded (expected ~5)", successCount)
 	}
@@ -260,7 +247,6 @@ func TestRateLimiterIntegration(t *testing.T) {
 		t.Errorf("Rate limiter too strict: only %d connections succeeded", successCount)
 	}
 
-	// Check pool stats
 	stats := pool.Stats()
 	metrics := pool.GetMetrics()
 
@@ -278,7 +264,6 @@ func TestGracefulShutdownIntegration(t *testing.T) {
 		t.Skip("Skipping shutdown test in short mode")
 	}
 
-	// Setup Redis
 	cfg := &redis.Config{
 		Host:     "localhost",
 		Port:     6379,
@@ -298,7 +283,6 @@ func TestGracefulShutdownIntegration(t *testing.T) {
 	poolConfig := &server.PoolConfig{
 		NumWorkers:        2,
 		QueueSize:         100,
-		ShutdownTimeout:   10 * time.Second,
 		RateLimiterConfig: nil,
 		ConnectionConfig:  server.DefaultConnectionConfig(),
 	}
@@ -306,7 +290,6 @@ func TestGracefulShutdownIntegration(t *testing.T) {
 	pool := server.NewWorkerPool(storage, poolConfig)
 	pool.Start()
 
-	// Start server
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to start listener: %v", err)
@@ -326,7 +309,6 @@ func TestGracefulShutdownIntegration(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Start some connections
 	var wg sync.WaitGroup
 	packet := buildTestEGTSPacket()
 
@@ -344,11 +326,8 @@ func TestGracefulShutdownIntegration(t *testing.T) {
 		}()
 	}
 
-	// Give connections time to start
 	time.Sleep(200 * time.Millisecond)
 
-	// Initiate shutdown
-	t.Log("Initiating graceful shutdown...")
 	shutdownStart := time.Now()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -363,13 +342,10 @@ func TestGracefulShutdownIntegration(t *testing.T) {
 		t.Errorf("Shutdown failed: %v", err)
 	}
 
-	// Close listener
 	listener.Close()
 
-	// Wait for all test connections
 	wg.Wait()
 
-	// Check final stats
 	stats := pool.Stats()
 	t.Logf("Final stats:")
 	t.Logf("  Accepted: %d", stats.TotalAccepted.Load())

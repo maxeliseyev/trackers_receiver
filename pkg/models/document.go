@@ -1,82 +1,68 @@
 package models
 
 import (
+	"strconv"
 	"time"
 )
 
-// Document представляет унифицированную структуру данных для всех протоколов
-// Сериализуется в MessagePack и сохраняется в Redis
-// Формат совместим с Python версией для обратной совместимости
+// Document is the protocol-independent record pushed to the queues.
+// Field names and msgpack tags must stay compatible with the Python receiver.
 type Document struct {
-	// Метаданные трекера
-	Client     uint32         `msgpack:"client"`      // OID или TID трекера
-	Source     string         `msgpack:"source"`      // Протокол: "egts", "galileosky", etc.
-	DateCreate time.Time      `msgpack:"date_create"` // Время создания записи на сервере (UTC)
-	IMEI       string         `msgpack:"imei"`        // IMEI терминала (15 цифр)
-	IMSI       string         `msgpack:"imsi"`        // IMSI SIM-карты (опционально)
-	Address    [2]interface{} `msgpack:"address"`     // [IP, Port] клиента
-	Version    string         `msgpack:"version"`     // Версия формата документа (например "1.0.1")
+	Client     uint32    `msgpack:"client"` // OID, or TID when OID is absent
+	Source     string    `msgpack:"source"` // protocol name, e.g. "egts"
+	DateCreate time.Time `msgpack:"date_create"`
+	IMEI       string    `msgpack:"imei"`
+	IMSI       string    `msgpack:"imsi"`
+	Address    [2]any    `msgpack:"address"` // [host, port] of the tracker
+	Version    string    `msgpack:"version"`
 
-	// Основные навигационные данные
-	NavData *NavigationData `msgpack:"nav_data"`
+	NavData  *NavigationData `msgpack:"nav_data"`
+	Location *GeoLocation    `msgpack:"loc"`
 
-	// GeoJSON локация (для MongoDB/PostgreSQL с geo-индексами)
-	Location *GeoLocation `msgpack:"loc"`
+	DataType2  map[string]any   `msgpack:"data_type_2,omitempty"`  // SR_POS_DATA extras
+	DataType8  []map[string]any `msgpack:"data_type_8,omitempty"`  // SR_LIQUID_LEVEL_SENSOR, one entry per sensor
+	DataType23 map[string]any   `msgpack:"data_type_23,omitempty"` // SR_ABS_CNTR_DATA
 
-	// Дополнительные данные (опционально, зависят от типа подзаписей)
-	DataType2  map[string]interface{}   `msgpack:"data_type_2,omitempty"`  // SR_POS_DATA дополнительные поля
-	DataType8  []map[string]interface{} `msgpack:"data_type_8,omitempty"`  // SR_LIQUID_LEVEL_SENSOR (массив датчиков)
-	DataType23 map[string]interface{}   `msgpack:"data_type_23,omitempty"` // SR_ABS_CNTR_DATA (счетчики)
-
-	// Датчики
-	SensorData map[string]interface{} `msgpack:"egts_sr_ad_sensors_data,omitempty"`  // SR_AD_SENSORS_DATA
-	AnalogData map[string]int32       `msgpack:"egts_sr_abs_an_sens_data,omitempty"` // SR_ABS_AN_SENS_DATA
+	SensorData map[string]any   `msgpack:"egts_sr_ad_sensors_data,omitempty"`
+	AnalogData map[string]int32 `msgpack:"egts_sr_abs_an_sens_data,omitempty"`
 }
 
-// NavigationData содержит основные навигационные данные
 type NavigationData struct {
-	// Время навигационного события (от трекера)
 	Timestamp time.Time `msgpack:"time_stamp"`
 
-	// Координаты
-	Longitude float64 `msgpack:"longitude"` // Долгота (-180.0 до 180.0)
-	Latitude  float64 `msgpack:"latitude"`  // Широта (-90.0 до 90.0)
+	Longitude float64 `msgpack:"longitude"`
+	Latitude  float64 `msgpack:"latitude"`
 
-	// Параметры движения
-	Speed    int  `msgpack:"speed_avg"` // Средняя скорость (км/ч)
-	SpeedMax *int `msgpack:"speed_max"` // Максимальная скорость (опционально)
-	Course   int  `msgpack:"course"`    // Курс (0-511 градусов, 9 бит)
+	Speed    int  `msgpack:"speed_avg"` // km/h
+	SpeedMax *int `msgpack:"speed_max"`
+	Course   int  `msgpack:"course"` // degrees, 0-359
 
-	// Высота и точность
-	Altitude *int32 `msgpack:"altitude"` // Высота в дециметрах (опционально)
-	Track    uint32 `msgpack:"track"`    // Одометр в метрах
+	Altitude *int32 `msgpack:"altitude"` // metres
+	Track    uint32 `msgpack:"track"`    // odometer, metres
 
-	// Спутниковая информация
-	Satellites *uint8 `msgpack:"nsat"` // Количество спутников (опционально)
-	PDOP       *uint8 `msgpack:"pdop"` // Position Dilution of Precision * 10 (опционально)
-	HDOP       *uint8 `msgpack:"hdop"` // Horizontal DOP (опционально)
-	VDOP       *uint8 `msgpack:"vdop"` // Vertical DOP (опционально)
+	Satellites *uint8 `msgpack:"nsat"`
+	PDOP       *uint8 `msgpack:"pdop"`
+	HDOP       *uint8 `msgpack:"hdop"`
+	VDOP       *uint8 `msgpack:"vdop"`
 
-	// Питание
-	BatVoltage   *uint8 `msgpack:"bat_voltage"`   // Напряжение внутренней батареи * 10 (В)
-	BuiltinAcc   *uint8 `msgpack:"builtin_acc"`   // Встроенный аккумулятор (опционально)
-	MainPowerVol *uint8 `msgpack:"mpsv"`          // Основное питание * 10 (В)
+	// Voltages in units of 0.1 V.
+	BatVoltage   *uint8 `msgpack:"bat_voltage"`
+	BuiltinAcc   *uint8 `msgpack:"builtin_acc"`
+	MainPowerVol *uint8 `msgpack:"mpsv"`
 
-	// Дополнительные флаги
-	ExtraDOP    uint8  `msgpack:"extra_dop"`     // Битовые флаги валидности (VLD|LOHS|LAHS)
-	ExtraDOPBin string `msgpack:"extra_dop_bin"` // Бинарное представление флагов (для отладки)
-	Source      uint8  `msgpack:"src"`           // Источник данных (0=внешний GNSS, 1=встроенный)
+	ExtraDOP    uint8  `msgpack:"extra_dop"` // VLD<<7 | LOHS<<6 | LAHS<<5
+	ExtraDOPBin string `msgpack:"extra_dop_bin"`
+	Source      uint8  `msgpack:"src"`
 }
 
-// GeoLocation представляет координаты в формате GeoJSON
-// Используется для spatial индексов в MongoDB/PostgreSQL
+// GeoLocation is a GeoJSON point. Coordinates are stored as [lat, lon], not the
+// GeoJSON-standard [lon, lat], because downstream consumers expect that order.
 type GeoLocation struct {
-	Type        string     `msgpack:"type"`        // Всегда "Point"
-	Coordinates [2]float64 `msgpack:"coordinates"` // [latitude, longitude] - ВАЖНО: lat, lon (не lon, lat!)
+	Type        string     `msgpack:"type"`
+	Coordinates [2]float64 `msgpack:"coordinates"`
 }
 
-// NewDocument создает новый документ с базовыми полями
-func NewDocument(source string, imei string, address [2]interface{}) *Document {
+func NewDocument(source string, imei string, address [2]any) *Document {
 	return &Document{
 		Source:     source,
 		IMEI:       imei,
@@ -88,11 +74,9 @@ func NewDocument(source string, imei string, address [2]interface{}) *Document {
 	}
 }
 
-// SetNavigationData устанавливает навигационные данные и автоматически обновляет Location
+// SetNavigationData also updates Location from the new coordinates.
 func (d *Document) SetNavigationData(nav *NavigationData) {
 	d.NavData = nav
-
-	// Автоматически обновляем GeoJSON координаты
 	if nav != nil {
 		d.Location = &GeoLocation{
 			Type:        "Point",
@@ -101,64 +85,43 @@ func (d *Document) SetNavigationData(nav *NavigationData) {
 	}
 }
 
-// AddLiquidLevelSensor добавляет данные датчика уровня топлива
-func (d *Document) AddLiquidLevelSensor(sensor map[string]interface{}) {
-	if d.DataType8 == nil {
-		d.DataType8 = make([]map[string]interface{}, 0)
-	}
+func (d *Document) AddLiquidLevelSensor(sensor map[string]any) {
 	d.DataType8 = append(d.DataType8, sensor)
 }
 
-// SetPosDataExtras устанавливает дополнительные данные из SR_POS_DATA
 func (d *Document) SetPosDataExtras(digitalInputs uint8, odometer uint32) {
 	if d.DataType2 == nil {
-		d.DataType2 = make(map[string]interface{})
+		d.DataType2 = make(map[string]any)
 	}
 	d.DataType2["di_in"] = digitalInputs
 	d.DataType2["odometer"] = odometer
 }
 
-// AddCounter добавляет значение счетчика
-func (d *Document) AddCounter(counterNumber uint8, value interface{}) {
+var counterNames = map[uint8]string{
+	100: "cnt_ack",
+	101: "cnt_noack",
+	102: "cnt_connect",
+	103: "egts_new_mark",
+	104: "egts_old_mark",
+	105: "egts_old_mark_time",
+}
+
+// AddCounter stores the value under the counter's well-known name (or its number),
+// and also as the last seen pair under "cn"/"cnv".
+func (d *Document) AddCounter(counterNumber uint8, value any) {
 	if d.DataType23 == nil {
-		d.DataType23 = make(map[string]interface{})
+		d.DataType23 = make(map[string]any)
 	}
 
-	// Известные счетчики
-	switch counterNumber {
-	case 100:
-		d.DataType23["cnt_ack"] = value
-	case 101:
-		d.DataType23["cnt_noack"] = value
-	case 102:
-		d.DataType23["cnt_connect"] = value
-	case 103:
-		d.DataType23["egts_new_mark"] = value
-	case 104:
-		d.DataType23["egts_old_mark"] = value
-	case 105:
-		d.DataType23["egts_old_mark_time"] = value
-	default:
-		// Общий счетчик
-		d.DataType23[string(rune(counterNumber))] = value
+	name, ok := counterNames[counterNumber]
+	if !ok {
+		name = strconv.Itoa(int(counterNumber))
 	}
-
-	// Сохраняем также общие поля
+	d.DataType23[name] = value
 	d.DataType23["cn"] = counterNumber
 	d.DataType23["cnv"] = value
 }
 
-// SetAnalogSensorData устанавливает данные аналоговых датчиков
-func (d *Document) SetAnalogSensorData(sensors map[string]interface{}) {
-	d.SensorData = sensors
-}
-
-// SetAbsoluteAnalogSensorData устанавливает абсолютные аналоговые датчики
-func (d *Document) SetAbsoluteAnalogSensorData(sensors map[string]int32) {
-	d.AnalogData = sensors
-}
-
-// Validate проверяет корректность документа перед сохранением
 func (d *Document) Validate() error {
 	if d.Source == "" {
 		return ErrInvalidSource
@@ -172,14 +135,12 @@ func (d *Document) Validate() error {
 	return nil
 }
 
-// Ошибки валидации
 var (
 	ErrInvalidSource  = &DocumentError{Code: "INVALID_SOURCE", Message: "source cannot be empty"}
 	ErrMissingIMEI    = &DocumentError{Code: "MISSING_IMEI", Message: "IMEI is required"}
 	ErrMissingNavData = &DocumentError{Code: "MISSING_NAV_DATA", Message: "navigation data is required"}
 )
 
-// DocumentError представляет ошибку валидации документа
 type DocumentError struct {
 	Code    string
 	Message string

@@ -1,97 +1,52 @@
 # Trackers Receiver
 
-High-performance TCP server for receiving GPS/GLONASS tracker data via EGTS protocol.
+TCP server that receives telemetry from vehicle trackers over EGTS (GOST R 54619-2011),
+converts navigation records to MessagePack documents and pushes them to Redis lists.
 
-## Overview
+## How it works
 
-This server receives telemetry data from vehicle tracking devices using the **EGTS (Era Glonass Telematics Standard)** protocol. It parses binary packets, validates data integrity using CRC checksums, and stores the data in Redis for further processing.
+- Each accepted connection is queued and served by a fixed pool of workers
+  (`2 × CPU`, between 4 and 32). A worker owns its connection until the tracker disconnects.
+- Every packet is checked against its header CRC8 and body CRC16 and acknowledged with
+  `EGTS_PT_RESPONSE`.
+- Records containing `SR_POS_DATA` become documents; `SR_EXT_POS_DATA`, `SR_STATE_DATA`,
+  `SR_LIQUID_LEVEL_SENSOR` and `SR_ABS_CNTR_DATA` in the same record are merged in.
+  `SR_TERM_IDENTITY` provides the IMEI/IMSI.
+- Each document is `LPUSH`ed to both the charger and fasttrack queues, which are trimmed to
+  their configured maximum length. The format matches the previous Python receiver.
 
-**Target Capacity:** 100,000+ concurrent connections
+Not implemented yet: routed headers (`RTE=1`), encryption and compression, structured
+logging, a metrics endpoint. A per-IP rate limiter exists in `internal/server` but is not
+enabled in `cmd/receiver`.
 
-## Features
+## Configuration
 
-### ✅ Implemented
+Environment variables (a `.env` file is loaded if present, see `.env.example`):
 
-- **EGTS Protocol Support**: Full implementation of EGTS packet parsing
-  - Transport Layer Header parsing with CRC8 validation
-  - Service Layer Records with CRC16 validation
-  - All standard subrecord types (position, sensors, state, etc.)
-  - Response packet generation
+| Variable | Default | |
+|---|---|---|
+| `SERVER_PORT` | `36000` | |
+| `SERVER_READ_TIMEOUT` | `600` | seconds to wait for the next packet |
+| `SERVER_WRITE_TIMEOUT` | `30` | seconds |
+| `SERVER_MAX_CONNECTIONS` | `10000` | connections that may wait for a free worker |
+| `REDIS_HOST` | `localhost` | |
+| `REDIS_PORT` | `6379` | |
+| `REDIS_PASSWORD` | | |
+| `REDIS_DB` | `0` | |
+| `REDIS_POOL_SIZE` | `100` | |
+| `REDIS_MAX_RETRIES` | `3` | |
+| `QUEUE_CHARGER_NAME` | `charger` | |
+| `QUEUE_CHARGER_MAX_LEN` | `2999999` | |
+| `QUEUE_FASTTRACK_NAME` | `fasttrack` | |
+| `QUEUE_FASTTRACK_MAX_LEN` | `2999999` | |
 
-- **High Performance Architecture**:
-  - Worker pool for connection management (CPU * 2 workers)
-  - Buffered job queue (10k capacity)
-  - Backpressure handling
-  - Redis integration with connection pooling
-  - MessagePack serialization
+## Running
 
-- **Production Features**:
-  - ✅ Graceful shutdown (SIGINT/SIGTERM)
-  - ✅ Rate limiting with IP blocking
-  - ✅ Exponential backoff for malicious IPs
-  - ✅ Whitelist support
-  - ✅ Comprehensive metrics
-  - ✅ Health checks
-  - ✅ Thread-safe operations
-
-### 🚧 In Progress
-
-- Integration tests
-- Structured logging (zerolog/slog)
-- Prometheus metrics endpoint
-
-## Quick Start
-
-### Prerequisites
-
-- Go 1.21+
-- Redis 6.0+
-
-### Configuration
-
-Set environment variables:
+Requires Go 1.25 and Redis.
 
 ```bash
-export SERVER_PORT=6000
-export REDIS_HOST=localhost
-export REDIS_PORT=6379
-export REDIS_DB=0
-export REDIS_QUEUE=tracker_data
+make test               # unit tests
+make test-integration   # needs Redis on localhost:6379
+make build && ./bin/receiver
+make docker-up          # receiver via docker-compose (Redis is external)
 ```
-
-### Running
-
-```bash
-# Install dependencies
-go mod download
-
-# Run tests
-go test ./...
-
-# Build
-go build -o bin/receiver ./cmd/receiver
-
-# Run
-./bin/receiver
-```
-
-## Supported Protocols
-
-### Current: EGTS (In Development)
-
-EGTS (Era Glonass Telematics Standard) is a Russian federal standard for vehicle tracking and telematics. This server implements:
-
-- **Packet Types**: APPDATA, RESPONSE, ECHO
-- **Position Data**: GPS coordinates, speed, direction, odometer
-- **Extended Data**: Satellite info (HDOP, VDOP, PDOP), number of satellites
-- **Sensors**: Digital/analog sensors, liquid level sensors, counters
-- **State Data**: Vehicle state, motion sensor, power supply status
-
-### Future Protocols
-
-The following protocols are planned for future implementation **after** EGTS is fully completed and tested:
-
-- **Galileosky** - Binary protocol with tag-based structure
-- **Teltonika** - AVL Data protocol (Codec 8/8 Extended)
-- **Wialon IPS** - Text-based protocol
-- **H02** - Simple text protocol for Chinese trackers

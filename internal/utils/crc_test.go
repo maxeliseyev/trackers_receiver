@@ -4,7 +4,6 @@ import (
 	"testing"
 )
 
-// TestCRC8 проверяет правильность вычисления CRC8
 func TestCRC8(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -19,20 +18,19 @@ func TestCRC8(t *testing.T) {
 		{
 			name:     "Empty data",
 			data:     []byte{},
-			expected: 0xFF, // Начальное значение
+			expected: 0xFF, // initial value
 		},
 		{
-			name: "EGTS header example (без CRC)",
-			// Реальный пример заголовка EGTS (первые 10 байт без CRC)
+			name:     "EGTS header example (no CRC)",
 			data:     []byte{0x01, 0x00, 0x00, 0x0B, 0x00, 0x03, 0x00, 0x01, 0x00, 0x01},
-			expected: 0, // Заменить на реальное значение при наличии реального примера
+			expected: 0, // no known reference value; result is only logged
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := CRC8(tt.data)
-			if tt.name != "EGTS header example (без CRC)" { // Пропускаем проверку для примера без известного CRC
+			if tt.name != "EGTS header example (no CRC)" {
 				if result != tt.expected {
 					t.Errorf("CRC8(%v) = 0x%02X, expected 0x%02X", tt.data, result, tt.expected)
 				}
@@ -43,7 +41,6 @@ func TestCRC8(t *testing.T) {
 	}
 }
 
-// TestCRC16 проверяет правильность вычисления CRC16-CCITT
 func TestCRC16(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -58,20 +55,19 @@ func TestCRC16(t *testing.T) {
 		{
 			name:     "Empty data",
 			data:     []byte{},
-			expected: 0xFFFF, // Начальное значение
+			expected: 0xFFFF, // initial value
 		},
 		{
-			name: "EGTS packet body example (без CRC)",
-			// Реальный пример тела пакета EGTS (без последних 2 байт CRC)
+			name:     "EGTS packet body example (no CRC)",
 			data:     []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05},
-			expected: 0, // Заменить на реальное значение при наличии реального примера
+			expected: 0, // no known reference value; result is only logged
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := CRC16(tt.data)
-			if tt.name != "EGTS packet body example (без CRC)" { // Пропускаем проверку для примера без известного CRC
+			if tt.name != "EGTS packet body example (no CRC)" {
 				if result != tt.expected {
 					t.Errorf("CRC16(%v) = 0x%04X, expected 0x%04X", tt.data, result, tt.expected)
 				}
@@ -82,7 +78,6 @@ func TestCRC16(t *testing.T) {
 	}
 }
 
-// TestValidateCRC8 проверяет функцию валидации CRC8
 func TestValidateCRC8(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -114,7 +109,6 @@ func TestValidateCRC8(t *testing.T) {
 	}
 }
 
-// TestValidateCRC16 проверяет функцию валидации CRC16
 func TestValidateCRC16(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -146,7 +140,6 @@ func TestValidateCRC16(t *testing.T) {
 	}
 }
 
-// BenchmarkCRC8 бенчмарк производительности CRC8
 func BenchmarkCRC8(b *testing.B) {
 	data := []byte("123456789")
 	b.ResetTimer()
@@ -155,7 +148,6 @@ func BenchmarkCRC8(b *testing.B) {
 	}
 }
 
-// BenchmarkCRC16 бенчмарк производительности CRC16
 func BenchmarkCRC16(b *testing.B) {
 	data := []byte("123456789")
 	b.ResetTimer()
@@ -164,7 +156,6 @@ func BenchmarkCRC16(b *testing.B) {
 	}
 }
 
-// BenchmarkCRC8LargeData бенчмарк CRC8 на большом объеме данных
 func BenchmarkCRC8LargeData(b *testing.B) {
 	data := make([]byte, 1024) // 1KB
 	for i := range data {
@@ -176,7 +167,6 @@ func BenchmarkCRC8LargeData(b *testing.B) {
 	}
 }
 
-// BenchmarkCRC16LargeData бенчмарк CRC16 на большом объеме данных
 func BenchmarkCRC16LargeData(b *testing.B) {
 	data := make([]byte, 1024) // 1KB
 	for i := range data {

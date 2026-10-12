@@ -14,26 +14,27 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port           int           // Listen port
-	ReadTimeout    time.Duration // Read timeout
-	WriteTimeout   time.Duration // Write timeout
-	MaxConnections int           // Maximum number of connections
+	Port         int
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	// MaxConnections caps how many accepted connections may wait for a worker.
+	MaxConnections int
 }
 
 type RedisConfig struct {
-	Host       string // Redis host
-	Port       int    // Redis port
-	Password   string // Password (optional)
-	DB         int    // Database number
-	PoolSize   int    // Pool size
-	MaxRetries int    // Maximum number of retries
+	Host       string
+	Port       int
+	Password   string
+	DB         int
+	PoolSize   int
+	MaxRetries int
 }
 
 type QueueConfig struct {
-	ChargerName     string // Charger queue name
-	ChargerMaxLen   int    // Charger queue maximum length
-	FasttrackName   string // Fasttrack queue name
-	FasttrackMaxLen int    // Fasttrack queue maximum length
+	ChargerName     string
+	ChargerMaxLen   int
+	FasttrackName   string
+	FasttrackMaxLen int
 }
 
 func Load() (*Config, error) {
@@ -72,8 +73,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid server port: %d (should be 1-65535)", c.Server.Port)
 	}
 
-	if c.Server.ReadTimeout < 0 {
-		return fmt.Errorf("read timeout cannot be negative")
+	if c.Server.ReadTimeout <= 0 || c.Server.WriteTimeout <= 0 {
+		return fmt.Errorf("server timeouts must be positive")
+	}
+
+	if c.Server.MaxConnections < 1 {
+		return fmt.Errorf("SERVER_MAX_CONNECTIONS must be positive")
 	}
 
 	if c.Redis.Host == "" {
@@ -116,6 +121,7 @@ func getEnvAsInt(key string, defaultValue int) int {
 	return value
 }
 
+// getEnvAsDuration reads a whole number of seconds.
 func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 	valueStr := os.Getenv(key)
 	if valueStr == "" {

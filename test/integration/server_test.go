@@ -17,7 +17,6 @@ func TestServerIntegration(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	// Setup Redis storage
 	cfg := &redis.Config{
 		Host:     "localhost",
 		Port:     6379,
@@ -35,18 +34,15 @@ func TestServerIntegration(t *testing.T) {
 	}
 	defer storage.Close()
 
-	// Clear test queues
 	ctx := context.Background()
 	storage.ClearQueue(ctx, "test_charger")
 	storage.ClearQueue(ctx, "test_fasttrack")
 
-	// Create worker pool
 	poolConfig := &server.PoolConfig{
-		NumWorkers:       2,
-		QueueSize:        10,
-		ShutdownTimeout:  5 * time.Second,
+		NumWorkers:        2,
+		QueueSize:         10,
 		RateLimiterConfig: nil, // Disable rate limiting for tests
-		ConnectionConfig: server.DefaultConnectionConfig(),
+		ConnectionConfig:  server.DefaultConnectionConfig(),
 	}
 
 	pool := server.NewWorkerPool(storage, poolConfig)
@@ -57,7 +53,6 @@ func TestServerIntegration(t *testing.T) {
 		pool.Shutdown(shutdownCtx)
 	}()
 
-	// Start TCP server
 	listener, err := net.Listen("tcp", "127.0.0.1:0") // Random port
 	if err != nil {
 		t.Fatalf("Failed to start listener: %v", err)
@@ -65,7 +60,6 @@ func TestServerIntegration(t *testing.T) {
 	defer listener.Close()
 
 	serverAddr := listener.Addr().String()
-	t.Logf("Test server listening on %s", serverAddr)
 
 	// Accept connections in background
 	go func() {
@@ -78,7 +72,6 @@ func TestServerIntegration(t *testing.T) {
 		}
 	}()
 
-	// Give server time to start
 	time.Sleep(100 * time.Millisecond)
 
 	t.Run("ValidEGTSPacket", func(t *testing.T) {
@@ -100,37 +93,30 @@ func testValidEGTSPacket(t *testing.T, serverAddr string, storage *redis.RedisSt
 	// This is a minimal valid EGTS_PT_APPDATA packet
 	packet := buildTestEGTSPacket()
 
-	// Connect to server
 	conn, err := net.Dial("tcp", serverAddr)
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
 	defer conn.Close()
 
-	// Set timeout
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
-	// Send packet
 	_, err = conn.Write(packet)
 	if err != nil {
 		t.Fatalf("Failed to send packet: %v", err)
 	}
 
-	// Read response
 	response := make([]byte, 1024)
 	n, err := conn.Read(response)
 	if err != nil {
 		t.Fatalf("Failed to read response: %v", err)
 	}
 
-	t.Logf("Received response: %d bytes", n)
-
 	// Verify response is valid EGTS_PT_RESPONSE
 	if n < 11 { // Minimum EGTS header size
 		t.Errorf("Response too short: %d bytes", n)
 	}
 
-	// Check protocol version and packet type
 	if response[0] != 0x01 { // PRV (Protocol Version)
 		t.Errorf("Invalid protocol version: 0x%02x", response[0])
 	}
@@ -138,7 +124,6 @@ func testValidEGTSPacket(t *testing.T, serverAddr string, storage *redis.RedisSt
 	// Wait for data to be saved to Redis
 	time.Sleep(500 * time.Millisecond)
 
-	// Check Redis queue length
 	ctx := context.Background()
 	queueLen, err := storage.GetQueueLength(ctx, "test_charger")
 	if err != nil {
@@ -162,7 +147,6 @@ func testInvalidPacket(t *testing.T, serverAddr string) {
 
 	conn.SetDeadline(time.Now().Add(2 * time.Second))
 
-	// Send garbage data
 	_, err = conn.Write([]byte("INVALID_DATA_NOT_EGTS"))
 	if err != nil {
 		t.Fatalf("Failed to send data: %v", err)
@@ -174,8 +158,6 @@ func testInvalidPacket(t *testing.T, serverAddr string) {
 
 	// Either connection closed (err != nil) or we got some response
 	t.Logf("Invalid packet response: %d bytes, err: %v", n, err)
-
-	// This is expected - server closes connection on invalid data
 }
 
 // testMultipleConnections tests concurrent connections
@@ -207,7 +189,6 @@ func testMultipleConnections(t *testing.T, serverAddr string, storage *redis.Red
 				return
 			}
 
-			// Read response
 			response := make([]byte, 1024)
 			_, err = conn.Read(response)
 			if err != nil {
@@ -220,7 +201,6 @@ func testMultipleConnections(t *testing.T, serverAddr string, storage *redis.Red
 		}(i)
 	}
 
-	// Wait for all connections
 	success := 0
 	for i := 0; i < numConnections; i++ {
 		if <-done {
@@ -234,10 +214,8 @@ func testMultipleConnections(t *testing.T, serverAddr string, storage *redis.Red
 		t.Errorf("Too many failed connections: %d/%d", numConnections-success, numConnections)
 	}
 
-	// Wait for data processing
 	time.Sleep(500 * time.Millisecond)
 
-	// Check Redis
 	queueLen, err := storage.GetQueueLength(ctx, "test_charger")
 	if err != nil {
 		t.Fatalf("Failed to get queue length: %v", err)
@@ -264,8 +242,8 @@ func buildTestEGTSPacket() []byte {
 		0x00,       // HE (Header Encoding = 0)
 		0x2D, 0x00, // FDL (Frame Data Length = 45 bytes) - will be calculated
 		0x01, 0x00, // PID (Packet Identifier = 1)
-		0x01,       // PT (Packet Type = EGTS_PT_APPDATA)
-		0x00,       // HCS (Header Checksum) - will be calculated
+		0x01, // PT (Packet Type = EGTS_PT_APPDATA)
+		0x00, // HCS (Header Checksum) - will be calculated
 	}
 
 	// Service Layer (simplified - just minimal structure)
@@ -307,16 +285,13 @@ func buildTestEGTSPacket() []byte {
 		0x00,
 	}
 
-	// Update FDL (Frame Data Length)
 	fdl := len(serviceData) + 2 // +2 for CRC16
 	packet[5] = byte(fdl & 0xFF)
 	packet[6] = byte((fdl >> 8) & 0xFF)
 
-	// Calculate Header CRC8
 	headerCRC := calculateCRC8(packet[0:10])
 	packet[10] = headerCRC
 
-	// Append service data
 	packet = append(packet, serviceData...)
 
 	// Calculate and append Service Frame CRC16
@@ -364,13 +339,12 @@ func TestWithConfig(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	// This test demonstrates how to test with different configurations
 	cfg := config.Config{
 		Server: config.ServerConfig{
-			Port:            36001,
-			ReadTimeout:     300,
-			WriteTimeout:    30,
-			MaxConnections:  100,
+			Port:           36001,
+			ReadTimeout:    300,
+			WriteTimeout:   30,
+			MaxConnections: 100,
 		},
 		Redis: config.RedisConfig{
 			Host:     "localhost",
@@ -379,16 +353,15 @@ func TestWithConfig(t *testing.T) {
 			DB:       15,
 		},
 		Queue: config.QueueConfig{
-			ChargerName:      "test_charger",
-			ChargerMaxLen:    1000,
-			FasttrackName:    "test_fasttrack",
-			FasttrackMaxLen:  1000,
+			ChargerName:     "test_charger",
+			ChargerMaxLen:   1000,
+			FasttrackName:   "test_fasttrack",
+			FasttrackMaxLen: 1000,
 		},
 	}
 
 	t.Logf("Testing with config: %+v", cfg)
 
-	// Test that config is valid
 	if cfg.Server.Port == 0 {
 		t.Error("Invalid server port")
 	}
